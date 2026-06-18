@@ -1,0 +1,20 @@
+{
+  "env": "prod",
+  "matchers": [
+    { "name": "alertname", "value": "HighCPU", "isRegex": false }
+  ],
+  "windows": [
+    {
+      "days": ["mon", "tue", "wed", "thu", "fri"],
+      "start": "02:00",
+      "end": "04:00"
+    },
+    {
+      "days": ["sat", "sun"],
+      "start": "00:00",
+      "end": "08:00"
+    }
+  ],
+  "created_by": "ivan",
+  "comment": "будни ночью коротко, выходные всю ночь"
+}
