@@ -1,0 +1,29 @@
+# Локальный стенд для проверки: фронт, бэк и тестовый Alertmanager.
+# Переменные берутся из файла .env рядом.
+services:
+  alertmanager:
+    image: prom/alertmanager:latest
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml"]
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+
+  backend:
+    build: ./backend
+    env_file: .env
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - ./data/:/app/.hub-repo
+    depends_on:
+      - alertmanager
+
+  frontend:
+    build: ./frontend
+    environment:
+      - BACKEND_URL=http://backend:8000
+    ports:
+      - "${FRONTEND_PORT:-8080}:80"
+    depends_on:
+      - backend

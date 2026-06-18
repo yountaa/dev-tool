@@ -1,0 +1,44 @@
+"""Роуты «Разовый»: silence ставится в AM сразу, конфиг сохраняем в git для истории."""
+import logging
+import uuid
+
+from fastapi import APIRouter
+
+from .. import client, save_hub
+from ..am_format import tag_comment
+from ..client import AlertmanagerError
+from ..deps import require_env
+from ..models import OnetimeRequest
+from .builder import build_onetime
+from logging_setup import event
+
+router = APIRouter(prefix="/{env}/onetime", tags=["silences:onetime"])
+log = logging.getLogger("silences.api")
+
+
+@router.post("")
+async def create_onetime(env: str, req: OnetimeRequest):
+    """Создать разовый правило: сохраняем всегда, в AM ставим сразу (если доступен).
+
+    Если AM лежит — правило всё равно сохранится, а шедулер до-ставит silence,
+    когда AM поднимется (пока время правила не прошло).
+    """
+    require_env(env)
+    cfg_id = uuid.uuid4().hex[:8]
+    am_id = ""
+    try:
+        body = build_onetime(req)
+        body["comment"] = tag_comment("onetime", cfg_id, body["comment"])  # метим для связи с правилом
+        am_id = await client.create_silence(env, body)
+    except AlertmanagerError:
+        pass  # AM недоступен — поставит шедулер позже
+    cfg = save_hub.save("onetime", env, req.model_dump(mode="json"), cfg_id=cfg_id, am_id=am_id)
+    event(log, "rule.created", env=env, kind="onetime", id=cfg.id, name=req.name, placed=bool(am_id))
+    return {"silence_id": am_id, "config_id": cfg.id, "placed": bool(am_id)}
+
+
+@router.get("")
+def list_onetime(env: str):
+    """Показать все разовые конфиги этого окружения (история из git)."""
+    require_env(env)
+    return save_hub.list_configs("onetime", env)
