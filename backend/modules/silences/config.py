@@ -33,5 +33,15 @@ SILENCE_CRON = os.getenv("SILENCE_CRON", "*/5 * * * *").strip()  # как час
 SILENCE_TZ = os.getenv("SILENCE_TZ", "Europe/Moscow").strip()   # таймзона окон расписания
 
 
+# --- Авторизация (oauth2-proxy перед вебом) ---
+# AUTH_ENABLED=true — личность берём из заголовка, который проставляет oauth2-proxy
+# после логина в Keycloak (имя = preferred_username из токена). Тогда поле «Создал»
+# в вебе только показывается, а не вводится. AUTH_ENABLED=false (по умолчанию) —
+# прокси нет, ходим во фронт напрямую, в качестве автора берём AUTH_FALLBACK_USER.
+AUTH_ENABLED = os.getenv("AUTH_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+AUTH_USER_HEADER = os.getenv("AUTH_USER_HEADER", "X-Forwarded-Preferred-Username").strip()
+AUTH_FALLBACK_USER = os.getenv("AUTH_FALLBACK_USER", "local").strip()
+
+
 def known_env(env: str) -> bool:
     return env in ALERTMANAGERS

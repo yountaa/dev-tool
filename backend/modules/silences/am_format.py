@@ -7,8 +7,13 @@ from datetime import datetime, timezone
 _TAG_RE = re.compile(r"^\[(onetime|schedule):([0-9a-f]+)\]\s*(.*)$", re.S)
 
 
-def tag_comment(kind: str, cfg_id: str, text: str) -> str:
-    return f"[{kind}:{cfg_id}] {text}"
+def tag_comment(kind: str, cfg_id: str, name: str, text: str) -> str:
+    """Комментарий для AM: метка + имя правила + текст. Имя кладём, чтобы
+    переименование в вебе было видно и в Alertmanager."""
+    head = f"[{kind}:{cfg_id}]"
+    if name:
+        head = f"{head} {name} ·"
+    return f"{head} {text}".rstrip()
 
 
 def parse_comment(comment: str):

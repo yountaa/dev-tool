@@ -7,6 +7,12 @@ import OnetimeForm from './components/OnetimeForm.vue'
 import ScheduleForm from './components/ScheduleForm.vue'
 import RulesList from './components/RulesList.vue'
 
+// me/auth приходят из App.vue (общий источник — /silences/me).
+const props = defineProps({
+  me: { type: String, default: '' },
+  auth: { type: Boolean, default: false },
+})
+
 const envs = ref([]) // [{ name }]
 const env = ref(null) // активное окружение
 const tab = ref('onetime') // активная под-вкладка
@@ -79,9 +85,9 @@ async function loadRules() {
 
     <!-- Контент активной под-вкладки -->
     <div v-if="env" class="tab-body">
-      <OnetimeForm v-if="tab === 'onetime'" :env="env" @created="loadRules" />
-      <ScheduleForm v-else-if="tab === 'schedule'" :env="env" @created="loadRules" />
-      <RulesList v-else :env="env" :items="rules" @reload="loadRules" />
+      <OnetimeForm v-if="tab === 'onetime'" :env="env" :me="me" :auth="auth" @created="loadRules" />
+      <ScheduleForm v-else-if="tab === 'schedule'" :env="env" :me="me" :auth="auth" @created="loadRules" />
+      <RulesList v-else :env="env" :items="rules" :auth="auth" @reload="loadRules" />
     </div>
   </div>
 </template>

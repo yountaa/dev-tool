@@ -8,14 +8,14 @@ import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from logging_setup import event
 
 from . import client, config, save_hub
 from .am_format import parse_comment, tag_comment
 from .client import AlertmanagerError
-from .deps import require_env
+from .deps import current_user, require_env
 from .models import OnetimeRequest, ScheduleRequest
 from .onetime.builder import build_onetime
 from .onetime.routes import router as onetime_router
@@ -33,6 +33,12 @@ log = logging.getLogger("silences.api")
 def environments():
     """Имена алертменеджеров для вкладок. Реальные URL наружу не отдаём."""
     return [{"name": name} for name in config.ALERTMANAGERS]
+
+
+@router.get("/me")
+def me(user: str = Depends(current_user)):
+    """Кто залогинен (для показа в форме). auth=true — имя пришло из Keycloak через прокси."""
+    return {"name": user, "auth": config.AUTH_ENABLED}
 
 
 # --- Правила (читаем и считаем локально, AM не дёргаем) -----------------------
@@ -113,27 +119,44 @@ async def _apply_onetime(env: str, cfg_id: str, payload: dict, old_am_id: str) -
     """Переставить разовый silence в AM (старый гасим) и вернуть новый am_id."""
     await _expire(env, old_am_id)
     body = build_onetime(OnetimeRequest(**payload))
-    body["comment"] = tag_comment("onetime", cfg_id, body["comment"])
+    body["comment"] = tag_comment("onetime", cfg_id, payload.get("name", ""), body["comment"])
     return await client.create_silence(env, body)
 
 
+async def _try_apply_onetime(env: str, cfg_id: str, payload: dict, old_am_id: str) -> str:
+    """Как _apply_onetime, но при недоступном AM не роняет запрос: вернёт "".
+
+    Конфиг тогда сохранится без am_id, а silence до-поставит шедулер
+    (reconcile_onetime) — так правка/включение не «ломают» правило в вебе.
+    """
+    try:
+        return await _apply_onetime(env, cfg_id, payload, old_am_id)
+    except AlertmanagerError as e:
+        log.warning("[%s] не удалось поставить разовый silence %s в AM: %s", env, cfg_id, e)
+        return ""
+
+
 @router.post("/{env}/rules/{kind}/{cfg_id}/enable")
-async def enable_rule(env: str, kind: str, cfg_id: str):
+async def enable_rule(env: str, kind: str, cfg_id: str, user: str = Depends(current_user)):
     """Включить правило. Разовый сразу ставим в AM, расписание оживит шедулер."""
     require_env(env)
     cfg = _require_rule(kind, env, cfg_id)
     am_id = cfg.am_id
     if kind == "onetime":
-        am_id = await _apply_onetime(env, cfg_id, cfg.payload, cfg.am_id)
-    saved = save_hub.save(kind, env, cfg.payload, cfg_id=cfg_id, enabled=True, am_id=am_id, created_at=cfg.created_at)
+        am_id = await _try_apply_onetime(env, cfg_id, cfg.payload, cfg.am_id)
+    saved = save_hub.save(kind, env, cfg.payload, cfg_id=cfg_id, enabled=True, am_id=am_id,
+                          created_at=cfg.created_at, actor=user, action="включил")
     if kind == "schedule":
-        await scheduler.apply_config(saved)  # ставим сразу, не ждём тика
+        try:
+            await scheduler.apply_config(saved)  # ставим сразу, не ждём тика
+        except AlertmanagerError as e:
+            log.warning("[%s] не удалось поставить расписание %s в AM: %s", env, cfg_id, e)
     event(log, "rule.enabled", env=env, kind=kind, id=cfg_id, name=cfg.payload.get("name", ""))
     return {"ok": True}
 
 
 @router.post("/{env}/rules/{kind}/{cfg_id}/disable")
-async def disable_rule(env: str, kind: str, cfg_id: str):
+async def disable_rule(env: str, kind: str, cfg_id: str, user: str = Depends(current_user)):
     """Выключить правило. Разовый гасим в AM, расписание перестанет ставить шедулер."""
     require_env(env)
     cfg = _require_rule(kind, env, cfg_id)
@@ -141,13 +164,14 @@ async def disable_rule(env: str, kind: str, cfg_id: str):
         await _expire(env, cfg.am_id)
     else:
         await _expire_schedule(env, cfg_id)  # гасим уже поставленные шедулером silence
-    save_hub.save(kind, env, cfg.payload, cfg_id=cfg_id, enabled=False, am_id="", created_at=cfg.created_at)
+    save_hub.save(kind, env, cfg.payload, cfg_id=cfg_id, enabled=False, am_id="",
+                  created_at=cfg.created_at, actor=user, action="выключил")
     event(log, "rule.disabled", env=env, kind=kind, id=cfg_id, name=cfg.payload.get("name", ""))
     return {"ok": True}
 
 
 @router.delete("/{env}/rules/{kind}/{cfg_id}")
-async def delete_rule(env: str, kind: str, cfg_id: str):
+async def delete_rule(env: str, kind: str, cfg_id: str, user: str = Depends(current_user)):
     """Удалить правило: гасим silence в AM (если разовый) и убираем конфиг из git."""
     require_env(env)
     cfg = _require_rule(kind, env, cfg_id)
@@ -155,35 +179,44 @@ async def delete_rule(env: str, kind: str, cfg_id: str):
         await _expire(env, cfg.am_id)
     else:
         await _expire_schedule(env, cfg_id)
-    save_hub.delete(kind, env, cfg_id)
+    save_hub.delete(kind, env, cfg_id, actor=user)
     event(log, "rule.deleted", env=env, kind=kind, id=cfg_id, name=cfg.payload.get("name", ""))
     return {"ok": True}
 
 
 @router.put("/{env}/rules/onetime/{cfg_id}")
-async def edit_onetime_rule(env: str, cfg_id: str, req: OnetimeRequest):
+async def edit_onetime_rule(env: str, cfg_id: str, req: OnetimeRequest, user: str = Depends(current_user)):
     """Изменить разовое правило. Если включено — переставляем silence в AM."""
     require_env(env)
     cfg = _require_rule("onetime", env, cfg_id)
+    payload = req.model_dump(mode="json")
+    if config.AUTH_ENABLED:
+        payload["created_by"] = cfg.payload.get("created_by", req.created_by)  # с авторизацией создателя не меняем
     am_id = cfg.am_id
     if cfg.enabled:
-        am_id = await _apply_onetime(env, cfg_id, req.model_dump(mode="json"), cfg.am_id)
-    save_hub.save("onetime", env, req.model_dump(mode="json"), cfg_id=cfg_id,
-                  enabled=cfg.enabled, am_id=am_id, created_at=cfg.created_at)
+        am_id = await _try_apply_onetime(env, cfg_id, payload, cfg.am_id)
+    save_hub.save("onetime", env, payload, cfg_id=cfg_id,
+                  enabled=cfg.enabled, am_id=am_id, created_at=cfg.created_at, actor=user, action="изменил")
     event(log, "rule.updated", env=env, kind="onetime", id=cfg_id, name=req.name)
     return {"ok": True}
 
 
 @router.put("/{env}/rules/schedule/{cfg_id}")
-async def edit_schedule_rule(env: str, cfg_id: str, req: ScheduleRequest):
+async def edit_schedule_rule(env: str, cfg_id: str, req: ScheduleRequest, user: str = Depends(current_user)):
     """Изменить расписание. Старые окна гасим, новые поставит шедулер на ближайшем проходе."""
     require_env(env)
     cfg = _require_rule("schedule", env, cfg_id)
-    saved = save_hub.save("schedule", env, req.model_dump(mode="json"), cfg_id=cfg_id,
-                          enabled=cfg.enabled, created_at=cfg.created_at)
+    payload = req.model_dump(mode="json")
+    if config.AUTH_ENABLED:
+        payload["created_by"] = cfg.payload.get("created_by", req.created_by)  # с авторизацией создателя не меняем
+    saved = save_hub.save("schedule", env, payload, cfg_id=cfg_id,
+                          enabled=cfg.enabled, created_at=cfg.created_at, actor=user, action="изменил")
     if cfg.enabled:
         await _expire_schedule(env, cfg_id)       # убираем silence со старыми окнами
-        await scheduler.apply_config(saved)       # и сразу ставим с новыми
+        try:
+            await scheduler.apply_config(saved)   # и сразу ставим с новыми
+        except AlertmanagerError as e:
+            log.warning("[%s] не удалось переставить расписание %s в AM: %s", env, cfg_id, e)
     event(log, "rule.updated", env=env, kind="schedule", id=cfg_id, name=req.name)
     return {"ok": True}
 

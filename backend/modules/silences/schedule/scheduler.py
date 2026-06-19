@@ -36,7 +36,7 @@ async def apply_config(cfg) -> None:
     # отбираем только недостающие, ставим их в AM параллельно (а не по одному)
     to_create = []
     for body in bodies:
-        body["comment"] = tag_comment("schedule", cfg.id, body["comment"])
+        body["comment"] = tag_comment("schedule", cfg.id, req.name, body["comment"])
         if not any(same_silence(body, e) for e in existing):
             to_create.append(body)
     if to_create:
@@ -62,10 +62,10 @@ async def reconcile_onetime(cfg) -> None:
             return  # уже стоит в AM
 
     body = build_onetime(OnetimeRequest(**cfg.payload))
-    body["comment"] = tag_comment("onetime", cfg.id, body["comment"])
+    body["comment"] = tag_comment("onetime", cfg.id, cfg.payload.get("name", ""), body["comment"])
     am_id = await create_silence(cfg.env, body)
     save_hub.save("onetime", cfg.env, cfg.payload, cfg_id=cfg.id,
-                  enabled=True, am_id=am_id, created_at=cfg.created_at)
+                  enabled=True, am_id=am_id, created_at=cfg.created_at, actor="scheduler", action="доставил")
     log.info("[%s] до-ставлен разовый silence %s", cfg.env, cfg.id)
 
 

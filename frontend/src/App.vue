@@ -4,13 +4,26 @@
 // светлой/тёмной темы (запоминается в localStorage).
 import { ref, computed, watchEffect, onMounted } from 'vue'
 import { modules } from './modules/registry.js'
+import { http } from './shared/api.js'
 
 const activeId = ref(modules[0]?.id)
 const active = computed(() => modules.find((m) => m.id === activeId.value))
 
+// Кто залогинен. auth=true — вход через Keycloak (oauth2-proxy), показываем имя и «выйти».
+// auth=false — локальный режим без входа (имя создателя вводится руками).
+const me = ref('')
+const auth = ref(false)
+
 const theme = ref('dark')
-onMounted(() => {
+onMounted(async () => {
   theme.value = localStorage.getItem('theme') || 'dark'
+  try {
+    const info = await http.get('/silences/me')
+    me.value = info.name || ''
+    auth.value = !!info.auth
+  } catch (e) {
+    /* бэкенд недоступен — оставляем пустым */
+  }
 })
 watchEffect(() => {
   document.documentElement.setAttribute('data-theme', theme.value)
@@ -69,8 +82,20 @@ function toggleTheme() {
       <header class="head">
         <span class="head-title">{{ active.title }}</span>
         <span class="head-sub">— {{ active.subtitle }}</span>
+
+        <!-- Кто вошёл -->
+        <div v-if="auth" class="user">
+          <span class="u-ico">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4" /><path d="M4 21c0-4 4-6 8-6s8 2 8 6" /></svg>
+          </span>
+          <span class="u-name">{{ me || '—' }}</span>
+          <a class="u-out" href="/oauth2/sign_out" title="Выйти и сменить пользователя">выйти</a>
+        </div>
+        <div v-else class="user dim" title="Вход не настроен — имя создателя вводится вручную">
+          <span class="u-name">локальный режим</span>
+        </div>
       </header>
-      <component :is="active.component" />
+      <component :is="active.component" :me="me" :auth="auth" />
     </main>
   </div>
 </template>
@@ -123,7 +148,23 @@ function toggleTheme() {
 .theme .mod-name { text-transform: uppercase; letter-spacing: 0.04em; font-size: 12px; }
 
 .content { max-width: 1040px; margin: 0 auto; padding: 26px 30px; }
-.head { margin-bottom: 22px; }
+.head { margin-bottom: 22px; display: flex; align-items: center; }
 .head-title { font-size: 17px; font-weight: 700; }
 .head-sub { color: var(--text-mute); font-family: var(--mono); font-size: 13px; margin-left: 8px; }
+
+/* Плашка пользователя справа в шапке */
+.user {
+  margin-left: auto; display: flex; align-items: center; gap: 8px;
+  background: var(--panel); border: 1px solid var(--border-soft);
+  border-radius: 20px; padding: 5px 6px 5px 11px; font-size: 13px;
+}
+.user .u-ico { color: var(--accent-bright); display: flex; }
+.user .u-name { font-family: var(--mono); color: var(--text); }
+.user .u-out {
+  color: var(--text-mute); text-decoration: none; font-size: 12px;
+  border-left: 1px solid var(--border-soft); padding: 1px 4px 1px 8px;
+}
+.user .u-out:hover { color: var(--danger); }
+.user.dim { padding: 5px 11px; }
+.user.dim .u-name { color: var(--text-mute); }
 </style>

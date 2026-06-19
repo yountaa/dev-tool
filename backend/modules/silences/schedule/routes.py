@@ -4,11 +4,11 @@
 """
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
-from .. import client, save_hub
+from .. import client, config, save_hub
 from ..am_format import same_silence
-from ..deps import require_env
+from ..deps import current_user, require_env
 from ..models import ScheduleRequest
 from . import scheduler
 from .builder import build_schedule
@@ -26,29 +26,27 @@ def list_schedules(env: str):
 
 
 @router.post("")
-async def create_schedule(env: str, req: ScheduleRequest):
+async def create_schedule(env: str, req: ScheduleRequest, user: str = Depends(current_user)):
     """Сохранить новое расписание и сразу поставить его silence в AM."""
     require_env(env)
-    cfg = save_hub.save("schedule", env, req.model_dump(mode="json"))
+    if config.AUTH_ENABLED:
+        req.created_by = user  # с авторизацией автор = залогиненный (из Keycloak), форму игнорируем
+    actor = req.created_by or user  # без авторизации — имя из формы (как раньше)
+    payload = req.model_dump(mode="json")
+    dup = save_hub.find_duplicate("schedule", env, payload)
+    if dup is not None:
+        raise HTTPException(409, f"Такое правило уже есть: «{dup.payload.get('name') or dup.id}»")
+    cfg = save_hub.save("schedule", env, payload, actor=actor, action="создал")
     await scheduler.apply_config(cfg)
     event(log, "rule.created", env=env, kind="schedule", id=cfg.id, name=req.name, windows=len(req.windows))
     return cfg
 
 
-@router.put("/{config_id}")
-def update_schedule(env: str, config_id: str, req: ScheduleRequest):
-    """Переписать существующее расписание (редактирование из веба)."""
-    require_env(env)
-    if save_hub.get_config("schedule", env, config_id) is None:
-        raise HTTPException(404, "расписание не найдено")
-    return save_hub.save("schedule", env, req.model_dump(mode="json"), cfg_id=config_id)
-
-
 @router.delete("/{config_id}")
-def delete_schedule(env: str, config_id: str):
+def delete_schedule(env: str, config_id: str, user: str = Depends(current_user)):
     """Удалить расписание из git."""
     require_env(env)
-    if not save_hub.delete("schedule", env, config_id):
+    if not save_hub.delete("schedule", env, config_id, actor=user):
         raise HTTPException(404, "расписание не найдено")
     return {"ok": True}
 

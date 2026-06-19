@@ -5,7 +5,11 @@ import { ref, reactive } from 'vue'
 import MatchersEditor from './MatchersEditor.vue'
 import { silencesApi } from '../api.js'
 
-const props = defineProps({ env: { type: String, required: true } })
+const props = defineProps({
+  env: { type: String, required: true },
+  me: { type: String, default: '' }, // имя из Keycloak (когда auth=true)
+  auth: { type: Boolean, default: false }, // true — имя из Keycloak, false — вводим руками
+})
 const emit = defineEmits(['created'])
 
 const form = reactive({
@@ -13,7 +17,7 @@ const form = reactive({
   matchers: [{ name: '', value: '', isRegex: false }],
   starts_at: '',
   ends_at: '',
-  created_by: '',
+  created_by: '', // используется только когда auth=false (ручной ввод)
   comment: '',
 })
 
@@ -26,7 +30,8 @@ function badMatchers() {
   return form.matchers.some((m) => !m.name || !m.value)
 }
 function isValid() {
-  return form.name && form.created_by && form.comment && form.starts_at && form.ends_at && !badMatchers()
+  const creatorOk = props.auth || form.created_by // при ручном вводе имя обязательно
+  return form.name && creatorOk && form.comment && form.starts_at && form.ends_at && !badMatchers()
 }
 
 function reset() {
@@ -49,7 +54,10 @@ async function submit() {
   busy.value = true
   msg.value = null
   try {
-    const res = await silencesApi.createOnetime(props.env, { ...form })
+    const res = await silencesApi.createOnetime(props.env, {
+      ...form,
+      created_by: props.auth ? props.me : form.created_by,
+    })
     msg.value = res.placed
       ? { ok: true, text: `Создан silence ${res.silence_id}` }
       : { ok: true, text: 'Правило сохранено. AM сейчас недоступен — silence поставит шедулер.' }
@@ -95,8 +103,9 @@ async function submit() {
         <input class="input" :class="{ invalid: showErrors && !form.name }" v-model="form.name" placeholder="Бэкап db-01" />
       </div>
       <div class="field" style="margin-bottom: 14px">
-        <label>Создал<span class="req">*</span></label>
-        <input class="input" :class="{ invalid: showErrors && !form.created_by }" v-model="form.created_by" placeholder="ivan.petrov" />
+        <label>Создатель<span v-if="!auth" class="req">*</span></label>
+        <input v-if="!auth" class="input" :class="{ invalid: showErrors && !form.created_by }" v-model="form.created_by" placeholder="ivan.petrov" />
+        <div v-else class="who">{{ me || '—' }}</div>
       </div>
       <div class="field">
         <label>Комментарий<span class="req">*</span></label>
@@ -119,4 +128,9 @@ async function submit() {
 .tab-title { font-size: 18px; font-weight: 700; margin: 4px 0 4px; }
 .tab-desc { color: var(--text-dim); margin: 0 0 18px; }
 .actions { display: flex; align-items: center; gap: 12px; }
+.who {
+  font-family: var(--mono); font-size: 13px; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--border-soft);
+  border-radius: 7px; padding: 8px 11px;
+}
 </style>

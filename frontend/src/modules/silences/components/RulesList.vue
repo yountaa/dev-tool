@@ -4,13 +4,13 @@
 // редактировать, включать/выключать тумблером и удалять.
 import { ref, reactive, computed } from 'vue'
 import MatchersEditor from './MatchersEditor.vue'
-import ScheduleGrid from './ScheduleGrid.vue'
+import ScheduleEditor from './ScheduleEditor.vue'
 import { silencesApi } from '../api.js'
-import { cellsToWindows, windowsToCells } from '../cells.js'
 
 const props = defineProps({
   env: { type: String, required: true },
   items: { type: Array, required: true },
+  auth: { type: Boolean, default: false }, // true — создатель из Keycloak (только показ)
 })
 const emit = defineEmits(['reload'])
 
@@ -25,7 +25,7 @@ const query = ref('')
 
 const busy = ref(false)
 const editingId = ref(null)
-const edit = reactive({ kind: '', name: '', matchers: [], starts_at: '', ends_at: '', cells: [], created_by: '', comment: '' })
+const edit = reactive({ kind: '', name: '', matchers: [], starts_at: '', ends_at: '', windows: [], created_by: '', comment: '' })
 
 function matchersText(m) {
   return (m || []).map((x) => `${x.name}${x.isRegex ? '=~' : '='}${x.value}`).join(', ')
@@ -122,9 +122,9 @@ function startEdit(r) {
   if (r.kind === 'onetime') {
     edit.starts_at = (r.payload.starts_at || '').slice(0, 16)
     edit.ends_at = (r.payload.ends_at || '').slice(0, 16)
-    edit.cells = []
+    edit.windows = []
   } else {
-    edit.cells = windowsToCells(r.payload.windows)
+    edit.windows = (r.payload.windows || []).map((w) => ({ days: [...w.days], start: w.start, end: w.end }))
     edit.starts_at = ''
     edit.ends_at = ''
   }
@@ -142,7 +142,7 @@ async function saveEdit(r) {
     } else {
       await silencesApi.editScheduleRule(props.env, r.id, {
         name: edit.name, matchers: edit.matchers,
-        windows: cellsToWindows(edit.cells),
+        windows: edit.windows,
         created_by: edit.created_by, comment: edit.comment,
       })
     }
@@ -221,13 +221,14 @@ async function saveEdit(r) {
           </div>
         </template>
         <div v-else class="card" style="margin-top: 4px">
-          <ScheduleGrid v-model="edit.cells" />
+          <ScheduleEditor v-model="edit.windows" />
         </div>
 
         <div class="grid-2" style="margin-top: 12px">
           <div class="field">
-            <label>Создал</label>
-            <input class="input" v-model="edit.created_by" />
+            <label>Создатель</label>
+            <input v-if="!auth" class="input" v-model="edit.created_by" placeholder="ivan.petrov" />
+            <div v-else class="who">{{ edit.created_by || '—' }}</div>
           </div>
           <div class="field">
             <label>Комментарий</label>
@@ -296,4 +297,9 @@ async function saveEdit(r) {
 
 .edit { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border-soft); }
 .edit-actions { display: flex; gap: 10px; margin-top: 12px; }
+.who {
+  font-family: var(--mono); font-size: 13px; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--border-soft);
+  border-radius: 7px; padding: 8px 11px;
+}
 </style>

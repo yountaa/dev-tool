@@ -3,18 +3,21 @@
 // Выбор ячеек превращаем в окна (windows) и сохраняем в git — ставит шедулер.
 import { ref, reactive } from 'vue'
 import MatchersEditor from './MatchersEditor.vue'
-import ScheduleGrid from './ScheduleGrid.vue'
+import ScheduleEditor from './ScheduleEditor.vue'
 import { silencesApi } from '../api.js'
-import { cellsToWindows } from '../cells.js'
 
-const props = defineProps({ env: { type: String, required: true } })
+const props = defineProps({
+  env: { type: String, required: true },
+  me: { type: String, default: '' }, // имя из Keycloak (когда auth=true)
+  auth: { type: Boolean, default: false }, // true — имя из Keycloak, false — вводим руками
+})
 const emit = defineEmits(['created'])
 
 const form = reactive({
   name: '',
   matchers: [{ name: '', value: '', isRegex: false }],
-  cells: [], // ключи "mon-13" из сетки
-  created_by: '',
+  windows: [], // окна {days, start, end} из ScheduleEditor
+  created_by: '', // используется только когда auth=false (ручной ввод)
   comment: '',
 })
 
@@ -27,15 +30,16 @@ function badMatchers() {
   return form.matchers.some((m) => !m.name || !m.value)
 }
 function isValid() {
-  return form.name && form.created_by && form.comment && form.cells.length && !badMatchers()
+  const creatorOk = props.auth || form.created_by // при ручном вводе имя обязательно
+  return form.name && creatorOk && form.comment && form.windows.length && !badMatchers()
 }
 
 function payload() {
   return {
     name: form.name,
     matchers: form.matchers,
-    windows: cellsToWindows(form.cells),
-    created_by: form.created_by,
+    windows: form.windows,
+    created_by: props.auth ? props.me : form.created_by,
     comment: form.comment,
   }
 }
@@ -43,7 +47,7 @@ function payload() {
 function reset() {
   form.name = ''
   form.matchers = [{ name: '', value: '', isRegex: false }]
-  form.cells = []
+  form.windows = []
   form.created_by = ''
   form.comment = ''
   msg.value = null
@@ -90,12 +94,12 @@ async function doPreview() {
 
     <MatchersEditor v-model="form.matchers" :show-errors="showErrors" />
 
-    <div class="card" :class="{ 'card-invalid': showErrors && !form.cells.length }">
+    <div class="card" :class="{ 'card-invalid': showErrors && !form.windows.length }">
       <div class="card-head">
         <span class="card-title">Окно расписания</span>
-        <span class="card-hint">часы 0–23, дни недели</span>
+        <span class="card-hint">часы 0–23 + минуты, дни недели</span>
       </div>
-      <ScheduleGrid v-model="form.cells" />
+      <ScheduleEditor v-model="form.windows" />
     </div>
 
     <div class="card">
@@ -105,8 +109,9 @@ async function doPreview() {
         <input class="input" :class="{ invalid: showErrors && !form.name }" v-model="form.name" placeholder="nightly-backup-window" />
       </div>
       <div class="field" style="margin-bottom: 14px">
-        <label>Создал<span class="req">*</span></label>
-        <input class="input" :class="{ invalid: showErrors && !form.created_by }" v-model="form.created_by" placeholder="ivan.petrov" />
+        <label>Создатель<span v-if="!auth" class="req">*</span></label>
+        <input v-if="!auth" class="input" :class="{ invalid: showErrors && !form.created_by }" v-model="form.created_by" placeholder="ivan.petrov" />
+        <div v-else class="who">{{ me || '—' }}</div>
       </div>
       <div class="field">
         <label>Комментарий<span class="req">*</span></label>
@@ -140,6 +145,11 @@ async function doPreview() {
 .tab-desc { color: var(--text-dim); margin: 0 0 18px; }
 .actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .card-invalid { border-color: var(--danger); }
+.who {
+  font-family: var(--mono); font-size: 13px; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--border-soft);
+  border-radius: 7px; padding: 8px 11px;
+}
 
 .preview { margin-top: 24px; }
 .preview .prev-row {
