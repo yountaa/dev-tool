@@ -42,11 +42,6 @@ async def list_silences(env: str) -> list[dict]:
     return (await _request("GET", env, "/api/v2/silences")).json()
 
 
-async def get_silence(env: str, silence_id: str) -> dict:
-    """Один silence по id (в т.ч. expired — нужно для повторного включения)."""
-    return (await _request("GET", env, f"/api/v2/silence/{silence_id}")).json()
-
-
 async def active_silences(env: str) -> list[dict]:
     """Живые silence (active/pending) — по ним проверяем дубли перед созданием."""
     silences = await list_silences(env)
