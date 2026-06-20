@@ -287,15 +287,6 @@ def get_config(kind: str, env: str, cfg_id: str) -> StoredConfig | None:
     return StoredConfig.model_validate_json(file.read_text(encoding="utf-8"))
 
 
-def set_enabled(kind: str, env: str, cfg_id: str, enabled: bool) -> bool:
-    """Включить/выключить конфиг (для шедулера). False — если конфига нет."""
-    cfg = get_config(kind, env, cfg_id)
-    if cfg is None:
-        return False
-    save(kind, env, cfg.payload, cfg_id=cfg_id, enabled=enabled, am_id=cfg.am_id, created_at=cfg.created_at)
-    return True
-
-
 def delete(kind: str, env: str, cfg_id: str, actor: str = "dev-tool") -> bool:
     """«Удалить» конфиг: переносим в env/old/kind/ (история в git), из веба пропадает.
 

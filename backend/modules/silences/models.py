@@ -50,13 +50,3 @@ class StoredConfig(BaseModel):
     payload: dict
     enabled: bool = True   # выключенное правило не применяется
     am_id: str = ""        # id silence в Alertmanager (для разового — чем гасить/обновлять)
-
-
-class SilenceEdit(BaseModel):
-    """Правка уже существующего silence из вкладки «Рабочие правила»."""
-    name: str = ""
-    matchers: list[Matcher] = Field(min_length=1)
-    starts_at: datetime
-    ends_at: datetime
-    created_by: str
-    comment: str = ""

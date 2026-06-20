@@ -5,9 +5,6 @@ export const silencesApi = {
   // окружения = вкладки (приходят из alert_* на бэкенде)
   environments: () => http.get('/silences/environments'),
 
-  // кто залогинен (имя из Keycloak через oauth2-proxy, либо фолбэк)
-  me: () => http.get('/silences/me'),
-
   // локальные правила (источник правды — git-хаб, не Alertmanager)
   rules: (env) => http.get(`/silences/${env}/rules`),
   enableRule: (env, kind, id) => http.post(`/silences/${env}/rules/${kind}/${id}/enable`),
@@ -20,7 +17,6 @@ export const silencesApi = {
   createOnetime: (env, body) => http.post(`/silences/${env}/onetime`, body),
 
   // по расписанию (хранится в git, ставит шедулер)
-  listSchedules: (env) => http.get(`/silences/${env}/schedules`),
   createSchedule: (env, body) => http.post(`/silences/${env}/schedules`, body),
   previewSchedule: (env, body) => http.post(`/silences/${env}/schedules/preview`, body),
 }

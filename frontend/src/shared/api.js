@@ -1,9 +1,7 @@
-// Обёртка над fetch. Ходим относительными путями (/silences/...), проксирует
-// Vite в dev / nginx в prod. VITE_API_BASE — если надо бить в API напрямую.
-const BASE = import.meta.env.VITE_API_BASE ?? ''
-
+// Обёртка над fetch. Ходим относительными путями (/silences/...) — их проксирует
+// Vite в dev и nginx в prod, поэтому адрес бэка в коде не зашит.
 async function request(method, path, body) {
-  const res = await fetch(BASE + path, {
+  const res = await fetch(path, {
     method,
     headers: body ? { 'Content-Type': 'application/json' } : {},
     body: body ? JSON.stringify(body) : undefined,
