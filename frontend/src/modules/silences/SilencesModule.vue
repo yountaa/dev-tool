@@ -7,6 +7,7 @@ import ManualForm from './components/ManualForm.vue'
 import ScheduleForm from './components/ScheduleForm.vue'
 import RulesList from './components/RulesList.vue'
 import AlertsList from './components/AlertsList.vue'
+import HistoryList from './components/HistoryList.vue'
 
 // me/auth приходят из App.vue (общий источник — /silences/me).
 const props = defineProps({
@@ -19,6 +20,7 @@ const env = ref(null) // активное окружение
 const tab = ref('manual') // активная под-вкладка
 const rules = ref([]) // локальные правила активного env (для списка и счётчика)
 const alerts = ref([]) // алерты активного env (правила Prometheus/vmalert + пометки AM)
+const history = ref([]) // локальная история действий активного env
 const error = ref(null)
 
 // Подсказки matchers: наборы лейблов из правил (статические) и их сработавших
@@ -35,6 +37,7 @@ const TABS = [
   ['schedule', 'Schedule'],
   ['rules', 'Silences'],
   ['alerts', 'Alerts'],
+  ['history', 'History'],
 ]
 
 onMounted(async () => {
@@ -62,7 +65,22 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
 watch(env, loadEnv, { immediate: false })
 
 async function loadEnv() {
-  await Promise.all([loadRules(), loadAlerts()])
+  await Promise.all([loadRules(), loadAlerts(), loadHistory()])
+}
+
+async function loadHistory() {
+  if (!env.value) return
+  try {
+    history.value = await silencesApi.history(env.value)
+  } catch (e) {
+    history.value = []
+  }
+}
+
+// После изменения правила обновляем и список, и историю (там новая запись).
+function onChange() {
+  loadRules()
+  loadHistory()
 }
 
 async function loadRules() {
@@ -125,10 +143,11 @@ async function loadAlerts() {
 
     <!-- Контент активной под-вкладки -->
     <div v-if="env" class="tab-body">
-      <ManualForm v-if="tab === 'manual'" :env="env" :me="me" :auth="auth" :alerts="suggestAlerts" @created="loadRules" />
-      <ScheduleForm v-else-if="tab === 'schedule'" :env="env" :me="me" :auth="auth" :alerts="suggestAlerts" @created="loadRules" />
-      <RulesList v-else-if="tab === 'rules'" :env="env" :items="rules" :auth="auth" :alerts="suggestAlerts" @reload="loadRules" />
-      <AlertsList v-else :env="env" :items="alerts" @reload="loadAlerts" />
+      <ManualForm v-if="tab === 'manual'" :env="env" :me="me" :auth="auth" :alerts="suggestAlerts" @created="onChange" />
+      <ScheduleForm v-else-if="tab === 'schedule'" :env="env" :me="me" :auth="auth" :alerts="suggestAlerts" @created="onChange" />
+      <RulesList v-else-if="tab === 'rules'" :env="env" :items="rules" :auth="auth" :alerts="suggestAlerts" @reload="onChange" />
+      <AlertsList v-else-if="tab === 'alerts'" :env="env" :items="alerts" @reload="loadAlerts" />
+      <HistoryList v-else :env="env" :items="history" @reload="loadHistory" />
     </div>
   </div>
 </template>

@@ -5,13 +5,14 @@ subprocess, без лишних либ.
 """
 from __future__ import annotations  # str | None на Python 3.9
 
+import json
 import logging
 import queue
 import re
 import subprocess
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import config
@@ -227,11 +228,22 @@ def save(kind: str, env: str, payload: dict, cfg_id: str | None = None,
     )
     with _lock:
         file = _path(env, kind, cfg.id)
+        # Снимок «до» (если правило уже было) — для истории и чтобы отсеять no-op
+        # переприменения шедулера (меняется только am_id — значимого изменения нет).
+        prev = None
+        if file.exists():
+            try:
+                prev = StoredConfig.model_validate_json(file.read_text(encoding="utf-8"))
+            except Exception:
+                prev = None
         file.parent.mkdir(parents=True, exist_ok=True)
         file.write_text(cfg.model_dump_json(indent=2), encoding="utf-8")
         name = payload.get("name") or cfg.id
         rel = str(file.relative_to(config.GIT_LOCAL_DIR))
         _commit_push([rel], f"{actor} {action} {kind} «{name}» ({env}/{cfg.id})", actor)
+        if prev is None or prev.payload != cfg.payload or prev.enabled != cfg.enabled:
+            _record(env, actor, action, kind, name,
+                    _snap(prev) if prev else None, _snap(cfg))
     return cfg
 
 
@@ -252,6 +264,103 @@ def list_configs(kind: str, env: str | None = None) -> list[StoredConfig]:
             except Exception as ex:
                 log.warning("пропускаю нечитаемый конфиг %s: %s", file, ex)
     return result
+
+
+# --- Локальная история действий ----------------------------------------------
+# Пишем в папку самого окружения: <env>/history/history.ndjson (по строке-JSON на
+# действие). Это НЕ git-операция: даже если push упадёт или git недоступен, история
+# останется на диске. Хранит снимок «до» и «после» — для показа что изменилось.
+def _snap(cfg: StoredConfig) -> dict:
+    """Снимок правила для истории: значимые поля (payload + enabled)."""
+    return {**cfg.payload, "enabled": cfg.enabled}
+
+
+def _history_path(env: str) -> Path:
+    """История окружения — в его же папке: <env>/history/history.ndjson."""
+    return config.GIT_LOCAL_DIR / env / "history" / "history.ndjson"
+
+
+def _record(env: str, user: str, action: str, kind: str, name: str,
+            before: dict | None, after: dict | None) -> None:
+    """Дописать одну строку в локальный журнал окружения. Ошибки не роняют действие."""
+    try:
+        path = _history_path(env)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rec = {
+            "time": datetime.now(timezone.utc).isoformat(),
+            "user": user or "dev-tool",
+            "action": action,
+            "kind": kind,
+            "name": name,
+            "before": before,   # None — создание
+            "after": after,     # None — удаление
+        }
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log.warning("история: не записал запись (%s/%s): %s", env, name, e)
+
+
+def history(env: str, limit: int = 500) -> list[dict]:
+    """История окружения, новые сверху. Читаем локальный журнал, git не трогаем."""
+    path = _history_path(env)
+    if not path.exists():
+        return []
+    items: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            items.append(json.loads(line))
+        except Exception:
+            continue
+    items.reverse()
+    return items[:limit]
+
+
+def cleanup(history_days: int, old_days: int) -> dict:
+    """Подрезать по всем окружениям: историю старше history_days и архив удалённых
+    правил (<env>/old/) старше old_days. Чистая, не зависит от git. Возвращает счётчики.
+    """
+    removed = {"history": 0, "old": 0}
+    root = config.GIT_LOCAL_DIR
+    if not root.exists():
+        return removed
+    now = datetime.now(timezone.utc)
+    h_cutoff = now - timedelta(days=history_days)
+    o_cutoff = now.timestamp() - old_days * 86400
+    with _lock:
+        for env_dir in [d for d in root.iterdir() if d.is_dir() and d.name != ".git"]:
+            # 1) история: оставить только записи свежее h_cutoff
+            hpath = env_dir / "history" / "history.ndjson"
+            if hpath.exists():
+                kept = []
+                for line in hpath.read_text(encoding="utf-8").splitlines():
+                    try:
+                        if datetime.fromisoformat(json.loads(line)["time"]) >= h_cutoff:
+                            kept.append(line)
+                        else:
+                            removed["history"] += 1
+                    except Exception:
+                        kept.append(line)  # нечитаемую строку не теряем
+                hpath.write_text(("\n".join(kept) + "\n") if kept else "", encoding="utf-8")
+            # 2) архив удалённых: убрать файлы old/**/*.json старше o_cutoff
+            old_dir = env_dir / "old"
+            if old_dir.exists():
+                for f in old_dir.rglob("*.json"):
+                    try:
+                        if f.stat().st_mtime < o_cutoff:
+                            f.unlink()
+                            removed["old"] += 1
+                    except Exception:
+                        pass
+                # убрать опустевшие папки (в т.ч. старую onetime/ после рефактора)
+                for d in sorted((p for p in old_dir.rglob("*") if p.is_dir()), reverse=True):
+                    try:
+                        if not any(d.iterdir()):
+                            d.rmdir()
+                    except Exception:
+                        pass
+    log.info("очистка: история -%d, архив -%d", removed["history"], removed["old"])
+    return removed
 
 
 def _matchers_key(matchers: list) -> set:
@@ -297,8 +406,11 @@ def delete(kind: str, env: str, cfg_id: str, actor: str = "dev-tool") -> bool:
         file = _path(env, kind, cfg_id)
         if not file.exists():
             return False
-        try:  # достаём имя для сообщения коммита до переноса
-            name = StoredConfig.model_validate_json(file.read_text(encoding="utf-8")).payload.get("name") or cfg_id
+        before = None
+        try:  # достаём имя и снимок «до» для коммита и истории
+            prev = StoredConfig.model_validate_json(file.read_text(encoding="utf-8"))
+            name = prev.payload.get("name") or cfg_id
+            before = _snap(prev)
         except Exception:
             name = cfg_id
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -308,4 +420,5 @@ def delete(kind: str, env: str, cfg_id: str, actor: str = "dev-tool") -> bool:
         rel_old = str(file.relative_to(config.GIT_LOCAL_DIR))
         rel_new = str(archive.relative_to(config.GIT_LOCAL_DIR))
         _commit_push([rel_old, rel_new], f"{actor} удалил {kind} «{name}» ({env}/{cfg_id})", actor)
+        _record(env, actor, "удалил", kind, name, before, None)
     return True

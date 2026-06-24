@@ -86,6 +86,11 @@ async def run_once() -> None:
                 log.warning("[%s] AM недоступен, повторю позже: %s", cfg.env, e)
 
 
+def run_cleanup() -> None:
+    """Авто-очистка старой истории и архива удалённых правил (по CLEANUP_CRON)."""
+    save_hub.cleanup(config.HISTORY_RETENTION_DAYS, config.OLD_RETENTION_DAYS)
+
+
 def start() -> None:
     """Запустить шедулер. Зовётся один раз на старте приложения.
 
@@ -97,5 +102,11 @@ def start() -> None:
         id="silences_schedule",
         replace_existing=True,
     )
+    scheduler.add_job(
+        run_cleanup,
+        CronTrigger.from_crontab(config.CLEANUP_CRON, timezone=config.SILENCE_TZ),
+        id="silences_cleanup",
+        replace_existing=True,
+    )
     scheduler.start()
-    log.info("шедулер запущен, cron=%s", config.SILENCE_CRON)
+    log.info("шедулер запущен, cron=%s, очистка=%s", config.SILENCE_CRON, config.CLEANUP_CRON)

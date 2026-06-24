@@ -177,6 +177,16 @@ async def list_alerts(env: str):
     return [_am_item(a) for a in am_alerts]
 
 
+@router.get("/{env}/history")
+def history(env: str):
+    """Локальная история действий окружения (кто/что/когда + что было/стало).
+
+    Читается из отдельного журнала .history (не из git) — есть даже если git упал.
+    """
+    require_env(env)
+    return save_hub.history(env)
+
+
 def _require_rule(kind: str, env: str, cfg_id: str):
     cfg = save_hub.get_config(kind, env, cfg_id)
     if cfg is None:

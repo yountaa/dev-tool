@@ -8,6 +8,9 @@ export const silencesApi = {
   // боевые алерты из Alertmanager (вкладка «Алерты» + подсказки matchers, только чтение)
   alerts: (env) => http.get(`/silences/${env}/alerts`),
 
+  // локальная история действий (вкладка «History»): кто/что/когда + было/стало
+  history: (env) => http.get(`/silences/${env}/history`),
+
   // локальные правила (источник правды — git-хаб, не Alertmanager)
   rules: (env) => http.get(`/silences/${env}/rules`),
   enableRule: (env, kind, id) => http.post(`/silences/${env}/rules/${kind}/${id}/enable`),

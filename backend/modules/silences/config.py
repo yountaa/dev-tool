@@ -49,6 +49,12 @@ GIT_ENABLED = bool(GIT_REPO_URL and GIT_USER and GIT_TOKEN)
 SILENCE_CRON = os.getenv("SILENCE_CRON", "*/5 * * * *").strip()  # как часто проверять расписания
 SILENCE_TZ = os.getenv("SILENCE_TZ", "Europe/Moscow").strip()   # таймзона окон расписания
 
+# Авто-очистка: когда запускать (cron) и что считать «старым» (в днях).
+# По умолчанию раз в месяц чистим историю и архив удалённых правил старше 30 дней.
+CLEANUP_CRON = os.getenv("CLEANUP_CRON", "0 3 1 * *").strip()           # 1-го числа в 03:00
+HISTORY_RETENTION_DAYS = int(os.getenv("HISTORY_RETENTION_DAYS", "30"))  # сколько хранить историю
+OLD_RETENTION_DAYS = int(os.getenv("OLD_RETENTION_DAYS", "30"))          # сколько хранить old/ (удалённые)
+
 
 # --- Авторизация (oauth2-proxy перед вебом) ---
 # AUTH_ENABLED=true — личность берём из заголовка, который проставляет oauth2-proxy

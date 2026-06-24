@@ -79,7 +79,7 @@ const filtered = computed(() =>
 )
 
 // Пагинация: показываем по PAGE_SIZE на странице, остальное листаем.
-const PAGE_SIZE = 20
+const PAGE_SIZE = 10
 const page = ref(1)
 const totalPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / PAGE_SIZE)))
 const paged = computed(() => filtered.value.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE))
@@ -193,7 +193,7 @@ function toggle(key) {
 .rule { background: var(--panel); border: 1px solid var(--border-soft); border-radius: 9px; padding: 9px 14px; margin-bottom: 7px; transition: border-color 0.12s; }
 .rule:hover { border-color: var(--border); }
 .rule.open { border-color: var(--accent); }
-.rule-row { display: flex; align-items: center; gap: 11px; cursor: pointer; user-select: none; }
+.rule-row { display: flex; align-items: center; gap: 11px; cursor: pointer; user-select: none; min-height: 40px; }
 .chev { display: flex; color: var(--text-mute); transition: transform 0.15s; }
 .rule.open .chev { transform: rotate(180deg); }
 
