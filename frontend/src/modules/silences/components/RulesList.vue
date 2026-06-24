@@ -2,7 +2,7 @@
 // Вкладка «Рабочие правила»: локальные правила из git-хаба (а не из AM).
 // Видно тип, имя и статус (считается локально). Можно искать, фильтровать,
 // редактировать, включать/выключать тумблером и удалять.
-import { ref, reactive, computed } from 'vue'
+import { ref, reactive, computed, watch } from 'vue'
 import MatchersEditor from './MatchersEditor.vue'
 import ScheduleEditor from './ScheduleEditor.vue'
 import { silencesApi } from '../api.js'
@@ -91,6 +91,14 @@ const filtered = computed(() =>
   }),
 )
 
+// Пагинация: показываем по PAGE_SIZE на странице, остальное листаем.
+const PAGE_SIZE = 20
+const page = ref(1)
+const totalPages = computed(() => Math.max(1, Math.ceil(filtered.value.length / PAGE_SIZE)))
+const paged = computed(() => filtered.value.slice((page.value - 1) * PAGE_SIZE, page.value * PAGE_SIZE))
+// Смена фильтра/поиска — на первую страницу.
+watch([typeFilter, statusFilter, query], () => { page.value = 1 })
+
 async function toggle(r) {
   busy.value = true
   try {
@@ -177,14 +185,14 @@ async function saveEdit(r) {
 
     <p v-if="!filtered.length" class="tab-desc">Ничего не найдено.</p>
 
-    <div v-for="r in filtered" :key="r.kind + r.id" class="rule" :class="{ open: editingId === r.id }">
+    <div v-for="r in paged" :key="r.kind + r.id" class="rule" :class="{ open: editingId === r.id }">
       <div class="rule-row" @click="toggleExpand(r)">
-        <span class="dot" :class="r.status"></span>
+        <span class="dot" :class="r.enabled ? 'enabled' : 'disabled'"></span>
         <div class="rule-info">
           <div class="rule-head">
             <span class="nm">{{ r.name || '(без имени)' }}</span>
             <span class="kind" :class="r.kind">{{ KIND[r.kind] }}</span>
-            <span class="state" :class="r.status">{{ r.status }}</span>
+            <span class="state" :class="r.enabled ? 'enabled' : 'disabled'">{{ r.enabled ? 'enabled' : 'disabled' }}</span>
           </div>
           <div class="sub" :title="subText(r)">{{ subText(r) }}</div>
         </div>
@@ -243,6 +251,13 @@ async function saveEdit(r) {
         </div>
       </div>
     </div>
+
+    <!-- Пагинация -->
+    <div v-if="totalPages > 1" class="pager">
+      <button class="btn btn-sm" :disabled="page === 1" @click="page--">←</button>
+      <span class="pager-info">{{ page }} / {{ totalPages }}</span>
+      <button class="btn btn-sm" :disabled="page === totalPages" @click="page++">→</button>
+    </div>
   </div>
 </template>
 
@@ -258,6 +273,9 @@ async function saveEdit(r) {
 .pill.on { background: var(--panel-2); color: var(--accent-bright); }
 .search { width: auto; flex: 1; min-width: 160px; }
 
+.pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 14px; }
+.pager-info { font-family: var(--mono); font-size: 13px; color: var(--text-mute); min-width: 56px; text-align: center; }
+
 .rule { background: var(--panel); border: 1px solid var(--border-soft); border-radius: 9px; padding: 9px 14px; margin-bottom: 7px; transition: border-color 0.12s; }
 .rule:hover { border-color: var(--border); }
 .rule.open { border-color: var(--accent); }
@@ -265,9 +283,8 @@ async function saveEdit(r) {
 .chev { display: flex; color: var(--text-mute); transition: transform 0.15s; }
 .rule.open .chev { transform: rotate(180deg); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--track); flex: none; }
-.dot.active { background: var(--accent-bright); }
-.dot.pending { background: var(--info); }
-.dot.expired, .dot.disabled { background: var(--track); }
+.dot.enabled { background: var(--accent-bright); }
+.dot.disabled { background: var(--track); }
 
 .rule-info { flex: 1; min-width: 0; }
 .rule-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; min-width: 0; }
@@ -277,9 +294,8 @@ async function saveEdit(r) {
 .kind.manual { background: var(--info-soft); color: var(--info); }
 .kind.schedule { background: var(--accent-soft); color: var(--accent-bright); }
 .state { font-size: 10px; padding: 1px 6px; border-radius: 20px; background: var(--chip); color: var(--text-dim); }
-.state.active { background: var(--accent-soft); color: var(--accent-bright); }
-.state.pending { background: var(--info-soft); color: var(--info); }
-.state.expired, .state.disabled { background: var(--chip); color: var(--text-mute); }
+.state.enabled { background: var(--accent-soft); color: var(--accent-bright); }
+.state.disabled { background: var(--chip); color: var(--text-mute); }
 
 .sub {
   font-family: var(--mono); font-size: 12px; color: var(--text-mute);

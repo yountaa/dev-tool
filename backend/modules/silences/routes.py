@@ -83,33 +83,98 @@ def list_rules(env: str):
     return rules
 
 
-# --- Боевые алерты (читаем из Alertmanager) -----------------------------------
-def _alert(a: dict) -> dict:
-    """Урезанный вид алерта для вкладки «Алерты»."""
-    status = a.get("status", {})
+# --- Алерты вкладки «Алерты» --------------------------------------------------
+# Источник правды о том, какие алерты вообще есть, — Prometheus/vmalert
+# (определения правил). Alertmanager лишь помечает, какие из них СЕЙЧАС горят и
+# не заглушены ли они. Если источник правил не задан (нет rules_<env>) —
+# откатываемся на живые алерты самого AM, чтобы вкладка не пустовала.
+def _am_index(am_alerts: list[dict]) -> dict[str, list[dict]]:
+    """Сгруппировать алерты AM по alertname — чтобы быстро находить пометки к правилу."""
+    by_name: dict[str, list[dict]] = {}
+    for a in am_alerts:
+        by_name.setdefault(a.get("labels", {}).get("alertname", ""), []).append(a)
+    return by_name
+
+
+def _am_marks(am_list: list[dict]) -> dict:
+    """Сводные пометки от AM по одному алерту: горит ли сейчас и не заглушён ли."""
+    state, silenced, inhibited = "", False, False
+    for a in am_list:
+        st = a.get("status", {})
+        if st.get("state") == "active":
+            state = "active"
+        elif st.get("state") == "suppressed" and state != "active":
+            state = "suppressed"
+        if st.get("silencedBy"):
+            silenced = True
+        if st.get("inhibitedBy"):
+            inhibited = True
+    return {"am_state": state, "silenced": silenced, "inhibited": inhibited}
+
+
+def _rule_item(r: dict, am_by_name: dict) -> dict:
+    """Определение правила + пометки AM → один элемент вкладки «Алерты»."""
+    name = r.get("name", "")
+    labels = dict(r.get("labels") or {})
+    labels["alertname"] = name
+    # Конкретные сработавшие серии (несут динамические лейблы: instance, pod…).
+    instances = [
+        {"labels": inst.get("labels", {}), "starts_at": inst.get("activeAt", "")}
+        for inst in (r.get("alerts") or [])
+    ]
     return {
-        "labels": a.get("labels", {}),
+        "name": name,
+        "labels": labels,
+        "annotations": r.get("annotations", {}),
+        "expr": r.get("query", ""),
+        "for": r.get("duration", 0),                 # секунды
+        "state": r.get("state", ""),                 # inactive / pending / firing (от эвалуатора)
+        "instances": instances,
+        **_am_marks(am_by_name.get(name, [])),
+    }
+
+
+def _am_item(a: dict) -> dict:
+    """Живой алерт AM в том же формате (fallback, когда источник правил не задан)."""
+    st = a.get("status", {})
+    labels = a.get("labels", {})
+    return {
+        "name": labels.get("alertname", ""),
+        "labels": labels,
         "annotations": a.get("annotations", {}),
-        "state": status.get("state", ""),                # active / suppressed
-        "starts_at": a.get("startsAt", ""),
-        "silenced_by": status.get("silencedBy", []),     # непусто → заглушён silence
-        "inhibited_by": status.get("inhibitedBy", []),   # непусто → подавлен другим алертом
+        "expr": "",
+        "for": 0,
+        "state": "firing" if st.get("state") == "active" else "inactive",
+        "instances": [{"labels": labels, "starts_at": a.get("startsAt", "")}],
+        "am_state": st.get("state", ""),
+        "silenced": bool(st.get("silencedBy")),
+        "inhibited": bool(st.get("inhibitedBy")),
     }
 
 
 @router.get("/{env}/alerts")
 async def list_alerts(env: str):
-    """Боевые алерты окружения из Alertmanager.
+    """Алерты окружения: определения из Prometheus/vmalert + пометки AM.
 
-    Питает и вкладку «Алерты», и каскадные подсказки matchers на фронте
-    (имена/значения лейблов берутся из .labels этих алертов). Только чтение.
+    Питает и вкладку «Алерты», и подсказки matchers (лейблы берутся из правил и
+    их сработавших серий). Только чтение.
     """
     require_env(env)
+    # Живые алерты AM — best-effort: если AM недоступен, просто не будет пометок.
     try:
-        alerts = await client.list_alerts(env)
+        am_alerts = await client.list_alerts(env)
+    except AlertmanagerError:
+        am_alerts = []
+    try:
+        rules = await client.list_rule_defs(env)
     except AlertmanagerError as e:
         raise HTTPException(502, str(e))
-    return [_alert(a) for a in alerts]
+
+    if rules:
+        am_by_name = _am_index(am_alerts)
+        return [_rule_item(r, am_by_name) for r in rules]
+    # Нет источника правил — показываем живые алерты AM в том же формате.
+    return [_am_item(a) for a in am_alerts]
 
 
 def _require_rule(kind: str, env: str, cfg_id: str):

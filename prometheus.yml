@@ -1,0 +1,18 @@
+# Локальный Prometheus для стенда: считает демо-правила и шлёт их в Alertmanager.
+# Вкладка «Алерты» тянет правила отсюда через GET /api/v1/rules.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+rule_files:
+  - /etc/prometheus/alert.rules.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']

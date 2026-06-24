@@ -7,15 +7,32 @@ from dotenv import load_dotenv
 load_dotenv()  # подхватит .env рядом, если есть
 
 
-# Каждая переменная alert_<имя>=<url> = отдельная вкладка окружения в вебе.
-ALERTMANAGERS: dict[str, str] = {}
+def _urls(value: str) -> list[str]:
+    """Значение переменной → список URL. Несколько нод (HA) пишем через запятую."""
+    return [u.strip().rstrip("/") for u in value.split(",") if u.strip()]
+
+
+# Каждая переменная alert_<имя>=<url[,url2...]> = отдельная вкладка окружения.
+# Значение — список нод Alertmanager (HA-кластер): читаем со всех, пишем на живую.
+ALERTMANAGERS: dict[str, list[str]] = {}
 for _key, _value in os.environ.items():
     if _key.lower().startswith("alert_"):
         _name = _key[len("alert_"):].lower()
-        ALERTMANAGERS[_name] = _value.rstrip("/")
+        ALERTMANAGERS[_name] = _urls(_value)
 
 if not ALERTMANAGERS:
     raise RuntimeError("не задано ни одного alert_* в окружении")
+
+
+# Источник определений алертов на окружение: rules_<имя>=<url[,url2...]> — ноды
+# Prometheus ИЛИ vmalert (у обоих одинаковый GET /api/v1/rules). Несколько нод
+# (HA vmalert) — через запятую: правила собираем со всех и дедупим. Необязательно:
+# нет переменной — вкладка «Алерты» откатывается на живые алерты из Alertmanager.
+RULE_SOURCES: dict[str, list[str]] = {}
+for _key, _value in os.environ.items():
+    if _key.lower().startswith("rules_"):
+        _name = _key[len("rules_"):].lower()
+        RULE_SOURCES[_name] = _urls(_value)
 
 
 # Git-хранилище конфигов (save_hub), доступ по deploy-токену.

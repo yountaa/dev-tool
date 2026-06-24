@@ -1,0 +1,255 @@
+# Сгенерировано для демо: 50 правил с разными состояниями.
+# firing — горит; pending→firing через ~2 мин (for: 2m); inactive — спит.
+groups:
+  - name: demo
+    rules:
+      - alert: HighMemoryUsage01
+        expr: vector(1) > 100
+        for: 0m
+        labels: { severity: warning, team: payments }
+        annotations: { summary: "Демо-алерт HighMemoryUsage01 (warning)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: DiskWillFill02
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: info, team: backend }
+        annotations: { summary: "Демо-алерт DiskWillFill02 (info)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: PodCrashLooping03
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: critical, team: dba }
+        annotations: { summary: "Демо-алерт PodCrashLooping03 (critical)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: TargetDown04
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: warning, team: demo }
+        annotations: { summary: "Демо-алерт TargetDown04 (warning)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: LatencyHigh05
+        expr: vector(1) > 0
+        for: 2m
+        labels: { severity: info, team: platform }
+        annotations: { summary: "Демо-алерт LatencyHigh05 (info)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: ErrorRateHigh06
+        expr: vector(1) > 100
+        for: 0m
+        labels: { severity: critical, team: payments }
+        annotations: { summary: "Демо-алерт ErrorRateHigh06 (critical)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: CertExpiring07
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: warning, team: backend }
+        annotations: { summary: "Демо-алерт CertExpiring07 (warning)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: QueueBacklog08
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: info, team: dba }
+        annotations: { summary: "Демо-алерт QueueBacklog08 (info)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: OOMKilled09
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: critical, team: demo }
+        annotations: { summary: "Демо-алерт OOMKilled09 (critical)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: HighCPUUsage10
+        expr: vector(1) > 0
+        for: 2m
+        labels: { severity: warning, team: platform }
+        annotations: { summary: "Демо-алерт HighCPUUsage10 (warning)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: HighMemoryUsage11
+        expr: vector(1) > 100
+        for: 0m
+        labels: { severity: info, team: payments }
+        annotations: { summary: "Демо-алерт HighMemoryUsage11 (info)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: DiskWillFill12
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: critical, team: backend }
+        annotations: { summary: "Демо-алерт DiskWillFill12 (critical)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: PodCrashLooping13
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: warning, team: dba }
+        annotations: { summary: "Демо-алерт PodCrashLooping13 (warning)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: TargetDown14
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: info, team: demo }
+        annotations: { summary: "Демо-алерт TargetDown14 (info)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: LatencyHigh15
+        expr: vector(1) > 0
+        for: 2m
+        labels: { severity: critical, team: platform }
+        annotations: { summary: "Демо-алерт LatencyHigh15 (critical)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: ErrorRateHigh16
+        expr: vector(1) > 100
+        for: 0m
+        labels: { severity: warning, team: payments }
+        annotations: { summary: "Демо-алерт ErrorRateHigh16 (warning)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: CertExpiring17
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: info, team: backend }
+        annotations: { summary: "Демо-алерт CertExpiring17 (info)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: QueueBacklog18
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: critical, team: dba }
+        annotations: { summary: "Демо-алерт QueueBacklog18 (critical)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: OOMKilled19
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: warning, team: demo }
+        annotations: { summary: "Демо-алерт OOMKilled19 (warning)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: HighCPUUsage20
+        expr: vector(1) > 0
+        for: 2m
+        labels: { severity: info, team: platform }
+        annotations: { summary: "Демо-алерт HighCPUUsage20 (info)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: HighMemoryUsage21
+        expr: vector(1) > 100
+        for: 0m
+        labels: { severity: critical, team: payments }
+        annotations: { summary: "Демо-алерт HighMemoryUsage21 (critical)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: DiskWillFill22
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: warning, team: backend }
+        annotations: { summary: "Демо-алерт DiskWillFill22 (warning)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: PodCrashLooping23
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: info, team: dba }
+        annotations: { summary: "Демо-алерт PodCrashLooping23 (info)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: TargetDown24
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: critical, team: demo }
+        annotations: { summary: "Демо-алерт TargetDown24 (critical)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: LatencyHigh25
+        expr: vector(1) > 0
+        for: 2m
+        labels: { severity: warning, team: platform }
+        annotations: { summary: "Демо-алерт LatencyHigh25 (warning)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: ErrorRateHigh26
+        expr: vector(1) > 100
+        for: 0m
+        labels: { severity: info, team: payments }
+        annotations: { summary: "Демо-алерт ErrorRateHigh26 (info)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: CertExpiring27
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: critical, team: backend }
+        annotations: { summary: "Демо-алерт CertExpiring27 (critical)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: QueueBacklog28
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: warning, team: dba }
+        annotations: { summary: "Демо-алерт QueueBacklog28 (warning)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: OOMKilled29
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: info, team: demo }
+        annotations: { summary: "Демо-алерт OOMKilled29 (info)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: HighCPUUsage30
+        expr: vector(1) > 0
+        for: 2m
+        labels: { severity: critical, team: platform }
+        annotations: { summary: "Демо-алерт HighCPUUsage30 (critical)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: HighMemoryUsage31
+        expr: vector(1) > 100
+        for: 0m
+        labels: { severity: warning, team: payments }
+        annotations: { summary: "Демо-алерт HighMemoryUsage31 (warning)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: DiskWillFill32
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: info, team: backend }
+        annotations: { summary: "Демо-алерт DiskWillFill32 (info)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: PodCrashLooping33
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: critical, team: dba }
+        annotations: { summary: "Демо-алерт PodCrashLooping33 (critical)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: TargetDown34
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: warning, team: demo }
+        annotations: { summary: "Демо-алерт TargetDown34 (warning)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: LatencyHigh35
+        expr: vector(1) > 0
+        for: 2m
+        labels: { severity: info, team: platform }
+        annotations: { summary: "Демо-алерт LatencyHigh35 (info)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: ErrorRateHigh36
+        expr: vector(1) > 100
+        for: 0m
+        labels: { severity: critical, team: payments }
+        annotations: { summary: "Демо-алерт ErrorRateHigh36 (critical)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: CertExpiring37
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: warning, team: backend }
+        annotations: { summary: "Демо-алерт CertExpiring37 (warning)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: QueueBacklog38
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: info, team: dba }
+        annotations: { summary: "Демо-алерт QueueBacklog38 (info)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: OOMKilled39
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: critical, team: demo }
+        annotations: { summary: "Демо-алерт OOMKilled39 (critical)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: HighCPUUsage40
+        expr: vector(1) > 0
+        for: 2m
+        labels: { severity: warning, team: platform }
+        annotations: { summary: "Демо-алерт HighCPUUsage40 (warning)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: HighMemoryUsage41
+        expr: vector(1) > 100
+        for: 0m
+        labels: { severity: info, team: payments }
+        annotations: { summary: "Демо-алерт HighMemoryUsage41 (info)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: DiskWillFill42
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: critical, team: backend }
+        annotations: { summary: "Демо-алерт DiskWillFill42 (critical)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: PodCrashLooping43
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: warning, team: dba }
+        annotations: { summary: "Демо-алерт PodCrashLooping43 (warning)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: TargetDown44
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: info, team: demo }
+        annotations: { summary: "Демо-алерт TargetDown44 (info)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: LatencyHigh45
+        expr: vector(1) > 0
+        for: 2m
+        labels: { severity: critical, team: platform }
+        annotations: { summary: "Демо-алерт LatencyHigh45 (critical)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: ErrorRateHigh46
+        expr: vector(1) > 100
+        for: 0m
+        labels: { severity: warning, team: payments }
+        annotations: { summary: "Демо-алерт ErrorRateHigh46 (warning)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: CertExpiring47
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: info, team: backend }
+        annotations: { summary: "Демо-алерт CertExpiring47 (info)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: QueueBacklog48
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: critical, team: dba }
+        annotations: { summary: "Демо-алерт QueueBacklog48 (critical)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: OOMKilled49
+        expr: vector(1) > 0
+        for: 0m
+        labels: { severity: warning, team: demo }
+        annotations: { summary: "Демо-алерт OOMKilled49 (warning)", description: "Сгенерированное правило для проверки визуала." }
+      - alert: HighCPUUsage50
+        expr: vector(1) > 0
+        for: 2m
+        labels: { severity: info, team: platform }
+        annotations: { summary: "Демо-алерт HighCPUUsage50 (info)", description: "Сгенерированное правило для проверки визуала." }

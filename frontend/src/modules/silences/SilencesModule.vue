@@ -1,7 +1,7 @@
 <script setup>
 // Корень модуля silences: сверху вкладки окружений (динамические, из бэкенда),
 // под ними под-вкладки Разовый / По расписанию / Существующие, дальше контент.
-import { ref, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { silencesApi } from './api.js'
 import ManualForm from './components/ManualForm.vue'
 import ScheduleForm from './components/ScheduleForm.vue'
@@ -18,8 +18,17 @@ const envs = ref([]) // [{ name }]
 const env = ref(null) // активное окружение
 const tab = ref('manual') // активная под-вкладка
 const rules = ref([]) // локальные правила активного env (для списка и счётчика)
-const alerts = ref([]) // боевые алерты активного env: вкладка «Алерты» + подсказки matchers
+const alerts = ref([]) // алерты активного env (правила Prometheus/vmalert + пометки AM)
 const error = ref(null)
+
+// Подсказки matchers: наборы лейблов из правил (статические) и их сработавших
+// серий (динамические — instance, pod…). MatchersEditor ждёт массив с .labels.
+const suggestAlerts = computed(() =>
+  alerts.value.flatMap((r) => [
+    { labels: r.labels },
+    ...(r.instances || []).map((i) => ({ labels: i.labels })),
+  ]),
+)
 
 const TABS = [
   ['manual', 'Manual'],
@@ -36,6 +45,18 @@ onMounted(async () => {
     error.value = e.message
   }
 })
+
+// И алерты (firing/pending/inactive + пометки AM), и список silence меняются сами
+// (правило загорелось/потухло, кто-то добавил silence) — раз в REFRESH_MS тихо
+// перечитываем оба раздела, чтобы видеть актуальную картину без перезагрузки.
+const REFRESH_MS = 15000
+let timer = null
+onMounted(() => {
+  timer = setInterval(() => {
+    if (env.value) { loadAlerts(); loadRules() }
+  }, REFRESH_MS)
+})
+onUnmounted(() => { if (timer) clearInterval(timer) })
 
 // При смене окружения перечитываем всё, что зависит от него.
 watch(env, loadEnv, { immediate: false })
@@ -104,9 +125,9 @@ async function loadAlerts() {
 
     <!-- Контент активной под-вкладки -->
     <div v-if="env" class="tab-body">
-      <ManualForm v-if="tab === 'manual'" :env="env" :me="me" :auth="auth" :alerts="alerts" @created="loadRules" />
-      <ScheduleForm v-else-if="tab === 'schedule'" :env="env" :me="me" :auth="auth" :alerts="alerts" @created="loadRules" />
-      <RulesList v-else-if="tab === 'rules'" :env="env" :items="rules" :auth="auth" :alerts="alerts" @reload="loadRules" />
+      <ManualForm v-if="tab === 'manual'" :env="env" :me="me" :auth="auth" :alerts="suggestAlerts" @created="loadRules" />
+      <ScheduleForm v-else-if="tab === 'schedule'" :env="env" :me="me" :auth="auth" :alerts="suggestAlerts" @created="loadRules" />
+      <RulesList v-else-if="tab === 'rules'" :env="env" :items="rules" :auth="auth" :alerts="suggestAlerts" @reload="loadRules" />
       <AlertsList v-else :env="env" :items="alerts" @reload="loadAlerts" />
     </div>
   </div>

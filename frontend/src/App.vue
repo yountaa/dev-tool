@@ -153,12 +153,13 @@ function toggleTheme() {
 
 /* Плашка пользователя справа в шапке */
 .user {
-  margin-left: auto; display: flex; align-items: center; gap: 8px;
+  margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 8px;
   background: var(--panel); border: 1px solid var(--border-soft);
-  border-radius: 20px; padding: 5px 6px 5px 11px; font-size: 13px;
+  border-radius: 20px; padding: 6px 14px; font-size: 13px;
+  white-space: nowrap;
 }
-.user .u-ico { color: var(--accent-bright); display: flex; }
+.user .u-ico { color: var(--accent-bright); display: flex; flex: none; }
 .user .u-name { font-family: var(--mono); color: var(--text); }
-.user.dim { padding: 5px 11px; }
+.user.dim { padding: 6px 14px; }
 .user.dim .u-name { color: var(--text-mute); }
 </style>
