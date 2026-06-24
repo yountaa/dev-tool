@@ -3,9 +3,10 @@
 // под ними под-вкладки Разовый / По расписанию / Существующие, дальше контент.
 import { ref, watch, onMounted } from 'vue'
 import { silencesApi } from './api.js'
-import OnetimeForm from './components/OnetimeForm.vue'
+import ManualForm from './components/ManualForm.vue'
 import ScheduleForm from './components/ScheduleForm.vue'
 import RulesList from './components/RulesList.vue'
+import AlertsList from './components/AlertsList.vue'
 
 // me/auth приходят из App.vue (общий источник — /silences/me).
 const props = defineProps({
@@ -15,14 +16,16 @@ const props = defineProps({
 
 const envs = ref([]) // [{ name }]
 const env = ref(null) // активное окружение
-const tab = ref('onetime') // активная под-вкладка
+const tab = ref('manual') // активная под-вкладка
 const rules = ref([]) // локальные правила активного env (для списка и счётчика)
+const alerts = ref([]) // боевые алерты активного env: вкладка «Алерты» + подсказки matchers
 const error = ref(null)
 
 const TABS = [
-  ['onetime', 'Разовый'],
-  ['schedule', 'По расписанию'],
-  ['rules', 'Рабочие правила'],
+  ['manual', 'Manual'],
+  ['schedule', 'Schedule'],
+  ['rules', 'Silences'],
+  ['alerts', 'Alerts'],
 ]
 
 onMounted(async () => {
@@ -34,8 +37,12 @@ onMounted(async () => {
   }
 })
 
-// При смене окружения перечитываем правила.
-watch(env, loadRules, { immediate: false })
+// При смене окружения перечитываем всё, что зависит от него.
+watch(env, loadEnv, { immediate: false })
+
+async function loadEnv() {
+  await Promise.all([loadRules(), loadAlerts()])
+}
 
 async function loadRules() {
   if (!env.value) return
@@ -44,6 +51,17 @@ async function loadRules() {
   } catch (e) {
     rules.value = []
     error.value = e.message
+  }
+}
+
+// Алерты берутся напрямую из Alertmanager — если он недоступен, просто оставляем
+// пусто: вкладка «Алерты» и подсказки matchers будут пустыми, остальное работает.
+async function loadAlerts() {
+  if (!env.value) return
+  try {
+    alerts.value = await silencesApi.alerts(env.value)
+  } catch (e) {
+    alerts.value = []
   }
 }
 </script>
@@ -80,14 +98,16 @@ async function loadRules() {
       >
         {{ label }}
         <span v-if="id === 'rules' && rules.length" class="count">{{ rules.length }}</span>
+        <span v-if="id === 'alerts' && alerts.length" class="count">{{ alerts.length }}</span>
       </button>
     </div>
 
     <!-- Контент активной под-вкладки -->
     <div v-if="env" class="tab-body">
-      <OnetimeForm v-if="tab === 'onetime'" :env="env" :me="me" :auth="auth" @created="loadRules" />
-      <ScheduleForm v-else-if="tab === 'schedule'" :env="env" :me="me" :auth="auth" @created="loadRules" />
-      <RulesList v-else :env="env" :items="rules" :auth="auth" @reload="loadRules" />
+      <ManualForm v-if="tab === 'manual'" :env="env" :me="me" :auth="auth" :alerts="alerts" @created="loadRules" />
+      <ScheduleForm v-else-if="tab === 'schedule'" :env="env" :me="me" :auth="auth" :alerts="alerts" @created="loadRules" />
+      <RulesList v-else-if="tab === 'rules'" :env="env" :items="rules" :auth="auth" :alerts="alerts" @reload="loadRules" />
+      <AlertsList v-else :env="env" :items="alerts" @reload="loadAlerts" />
     </div>
   </div>
 </template>

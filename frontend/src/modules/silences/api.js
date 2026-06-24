@@ -5,16 +5,19 @@ export const silencesApi = {
   // окружения = вкладки (приходят из alert_* на бэкенде)
   environments: () => http.get('/silences/environments'),
 
+  // боевые алерты из Alertmanager (вкладка «Алерты» + подсказки matchers, только чтение)
+  alerts: (env) => http.get(`/silences/${env}/alerts`),
+
   // локальные правила (источник правды — git-хаб, не Alertmanager)
   rules: (env) => http.get(`/silences/${env}/rules`),
   enableRule: (env, kind, id) => http.post(`/silences/${env}/rules/${kind}/${id}/enable`),
   disableRule: (env, kind, id) => http.post(`/silences/${env}/rules/${kind}/${id}/disable`),
   deleteRule: (env, kind, id) => http.del(`/silences/${env}/rules/${kind}/${id}`),
-  editOnetimeRule: (env, id, body) => http.put(`/silences/${env}/rules/onetime/${id}`, body),
+  editManualRule: (env, id, body) => http.put(`/silences/${env}/rules/manual/${id}`, body),
   editScheduleRule: (env, id, body) => http.put(`/silences/${env}/rules/schedule/${id}`, body),
 
   // разовый
-  createOnetime: (env, body) => http.post(`/silences/${env}/onetime`, body),
+  createManual: (env, body) => http.post(`/silences/${env}/manual`, body),
 
   // по расписанию (хранится в git, ставит шедулер)
   createSchedule: (env, body) => http.post(`/silences/${env}/schedules`, body),

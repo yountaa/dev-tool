@@ -22,7 +22,7 @@ class Window(BaseModel):
     end: str             # "ЧЧ:ММ"; если <= start — окно уходит на следующий день
 
 
-class OnetimeRequest(BaseModel):
+class ManualRequest(BaseModel):
     """Разовый silence на конкретные даты (вкладка «Разовый»)."""
     name: str            # человеческое имя правила (хранится в git)
     matchers: list[Matcher] = Field(min_length=1)
@@ -44,7 +44,7 @@ class ScheduleRequest(BaseModel):
 class StoredConfig(BaseModel):
     """Что лежит в git: запрос (payload) + служебные поля. kind говорит, чей payload."""
     id: str
-    kind: Literal["onetime", "schedule"]
+    kind: Literal["manual", "schedule"]
     env: str
     created_at: datetime
     payload: dict

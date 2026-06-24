@@ -9,7 +9,7 @@ import { http } from './shared/api.js'
 const activeId = ref(modules[0]?.id)
 const active = computed(() => modules.find((m) => m.id === activeId.value))
 
-// Кто залогинен. auth=true — вход через Keycloak (oauth2-proxy), показываем имя и «выйти».
+// Кто залогинен. auth=true — вход через Keycloak (oauth2-proxy), показываем имя.
 // auth=false — локальный режим без входа (имя создателя вводится руками).
 const me = ref('')
 const auth = ref(false)
@@ -44,7 +44,7 @@ function toggleTheme() {
             <path d="M3 7l9-4 9 4-9 4-9-4Z" /><path d="M3 12l9 4 9-4" /><path d="M3 17l9 4 9-4" />
           </svg>
         </span>
-        <span class="brand-name">Devops tool</span>
+        <span class="brand-name">Observability tool</span>
       </div>
 
       <!-- Список модулей -->
@@ -89,7 +89,6 @@ function toggleTheme() {
             <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4" /><path d="M4 21c0-4 4-6 8-6s8 2 8 6" /></svg>
           </span>
           <span class="u-name">{{ me || '—' }}</span>
-          <a class="u-out" href="/oauth2/sign_out" title="Выйти и сменить пользователя">выйти</a>
         </div>
         <div v-else class="user dim" title="Вход не настроен — имя создателя вводится вручную">
           <span class="u-name">локальный режим</span>
@@ -160,11 +159,6 @@ function toggleTheme() {
 }
 .user .u-ico { color: var(--accent-bright); display: flex; }
 .user .u-name { font-family: var(--mono); color: var(--text); }
-.user .u-out {
-  color: var(--text-mute); text-decoration: none; font-size: 12px;
-  border-left: 1px solid var(--border-soft); padding: 1px 4px 1px 8px;
-}
-.user .u-out:hover { color: var(--danger); }
 .user.dim { padding: 5px 11px; }
 .user.dim .u-name { color: var(--text-mute); }
 </style>

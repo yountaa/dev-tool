@@ -11,13 +11,14 @@ const props = defineProps({
   env: { type: String, required: true },
   items: { type: Array, required: true },
   auth: { type: Boolean, default: false }, // true — создатель из Keycloak (только показ)
+  alerts: { type: Array, default: () => [] }, // боевые алерты env для подсказок matchers
 })
 const emit = defineEmits(['reload'])
 
-const KIND = { onetime: 'Разовый', schedule: 'По расписанию' }
+const KIND = { manual: 'manual', schedule: 'schedule' }
 const DAY = { mon: 'Пн', tue: 'Вт', wed: 'Ср', thu: 'Чт', fri: 'Пт', sat: 'Сб', sun: 'Вс' }
-const TYPES = [['all', 'Все'], ['onetime', 'Разовые'], ['schedule', 'По расписанию']]
-const STATUSES = [['all', 'все'], ['on', 'включены'], ['off', 'выключены']]
+const TYPES = [['all', 'all'], ['manual', 'manual'], ['schedule', 'schedule']]
+const STATUSES = [['all', 'all'], ['on', 'enabled'], ['off', 'disabled']]
 
 const typeFilter = ref('all')
 const statusFilter = ref('all')
@@ -46,7 +47,7 @@ function windowsText(windows) {
     .join('; ')
 }
 function periodText(r) {
-  return r.kind === 'onetime'
+  return r.kind === 'manual'
     ? `${fmtDt(r.payload.starts_at)} → ${fmtDt(r.payload.ends_at)}`
     : windowsText(r.payload.windows)
 }
@@ -61,7 +62,7 @@ function pluralWindows(n) {
 // («N окон»), полную сетку видно при раскрытии. Длинное обрезается многоточием.
 function subText(r) {
   const parts = [matchersText(r.payload.matchers)]
-  if (r.kind === 'onetime') {
+  if (r.kind === 'manual') {
     parts.push(periodText(r))
   } else {
     const n = (r.payload.windows || []).length
@@ -119,7 +120,7 @@ function startEdit(r) {
   edit.matchers = (r.payload.matchers || []).map((m) => ({ name: m.name, value: m.value, isRegex: !!m.isRegex }))
   edit.created_by = r.payload.created_by || ''
   edit.comment = r.payload.comment || ''
-  if (r.kind === 'onetime') {
+  if (r.kind === 'manual') {
     edit.starts_at = (r.payload.starts_at || '').slice(0, 16)
     edit.ends_at = (r.payload.ends_at || '').slice(0, 16)
     edit.windows = []
@@ -133,8 +134,8 @@ function startEdit(r) {
 async function saveEdit(r) {
   busy.value = true
   try {
-    if (r.kind === 'onetime') {
-      await silencesApi.editOnetimeRule(props.env, r.id, {
+    if (r.kind === 'manual') {
+      await silencesApi.editManualRule(props.env, r.id, {
         name: edit.name, matchers: edit.matchers,
         starts_at: edit.starts_at, ends_at: edit.ends_at,
         created_by: edit.created_by, comment: edit.comment,
@@ -171,7 +172,7 @@ async function saveEdit(r) {
       <div class="pills">
         <button v-for="[id, label] in STATUSES" :key="id" class="pill" :class="{ on: statusFilter === id }" @click="statusFilter = id">{{ label }}</button>
       </div>
-      <input class="input search" v-model="query" placeholder="поиск по имени…" />
+      <input class="input search" v-model="query" placeholder="search by name or labels…" />
     </div>
 
     <p v-if="!filtered.length" class="tab-desc">Ничего не найдено.</p>
@@ -206,9 +207,9 @@ async function saveEdit(r) {
           <label>Название</label>
           <input class="input" v-model="edit.name" />
         </div>
-        <MatchersEditor v-model="edit.matchers" />
+        <MatchersEditor v-model="edit.matchers" :alerts="alerts" />
 
-        <template v-if="r.kind === 'onetime'">
+        <template v-if="r.kind === 'manual'">
           <div class="grid-2">
             <div class="field">
               <label>Начало</label>
@@ -273,7 +274,7 @@ async function saveEdit(r) {
 .nm { font-weight: 600; font-size: 14px; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kind, .state { flex: none; }
 .kind { font-size: 10px; padding: 1px 7px; border-radius: 20px; white-space: nowrap; }
-.kind.onetime { background: var(--info-soft); color: var(--info); }
+.kind.manual { background: var(--info-soft); color: var(--info); }
 .kind.schedule { background: var(--accent-soft); color: var(--accent-bright); }
 .state { font-size: 10px; padding: 1px 6px; border-radius: 20px; background: var(--chip); color: var(--text-dim); }
 .state.active { background: var(--accent-soft); color: var(--accent-bright); }

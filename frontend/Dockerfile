@@ -1,7 +1,9 @@
 FROM node:20-alpine AS build
 WORKDIR /app
 COPY package*.json ./
-RUN npm install
+# npm ci ставит строго по package-lock.json — детерминированно и без полного
+# резолва дерева из реестра (именно он подвешивал "npm install").
+RUN npm ci --no-audit --no-fund
 COPY . .
 RUN npm run build
 

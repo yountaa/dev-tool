@@ -9,6 +9,7 @@ const props = defineProps({
   env: { type: String, required: true },
   me: { type: String, default: '' }, // имя из Keycloak (когда auth=true)
   auth: { type: Boolean, default: false }, // true — имя из Keycloak, false — вводим руками
+  alerts: { type: Array, default: () => [] }, // боевые алерты env для подсказок matchers
 })
 const emit = defineEmits(['created'])
 
@@ -54,7 +55,7 @@ async function submit() {
   busy.value = true
   msg.value = null
   try {
-    const res = await silencesApi.createOnetime(props.env, {
+    const res = await silencesApi.createManual(props.env, {
       ...form,
       created_by: props.auth ? props.me : form.created_by,
     })
@@ -75,11 +76,11 @@ async function submit() {
     <h2 class="tab-title">Разовый silence</h2>
     <p class="tab-desc">Заглушить алерты на конкретный период по датам.</p>
 
-    <MatchersEditor v-model="form.matchers" :show-errors="showErrors" />
+    <MatchersEditor v-model="form.matchers" :show-errors="showErrors" :alerts="alerts" />
 
     <div class="card">
       <div class="card-head">
-        <span class="card-title">Период</span>
+        <span class="card-title">Period</span>
         <span class="card-hint">локальное время</span>
       </div>
       <div class="grid-2">
@@ -96,7 +97,7 @@ async function submit() {
 
     <div class="card">
       <div class="card-head">
-        <span class="card-title">Метаданные</span>
+        <span class="card-title">Metadata</span>
       </div>
       <div class="field" style="margin-bottom: 14px">
         <label>Название правила<span class="req">*</span></label>

@@ -262,7 +262,7 @@ def _matchers_key(matchers: list) -> set:
 def find_duplicate(kind: str, env: str, payload: dict, exclude_id: str | None = None):
     """Уже есть правило с такими же матчерами и концом алертинга? Вернуть его (или None).
 
-    onetime — сравниваем по ends_at, schedule — по набору окон.
+    manual — сравниваем по ends_at, schedule — по набору окон.
     """
     new_matchers = _matchers_key(payload.get("matchers"))
     for cfg in list_configs(kind, env):
@@ -270,7 +270,7 @@ def find_duplicate(kind: str, env: str, payload: dict, exclude_id: str | None = 
             continue
         if _matchers_key(cfg.payload.get("matchers")) != new_matchers:
             continue
-        if kind == "onetime":
+        if kind == "manual":
             if cfg.payload.get("ends_at") == payload.get("ends_at"):
                 return cfg
         else:

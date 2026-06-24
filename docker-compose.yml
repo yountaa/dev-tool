@@ -1,5 +1,12 @@
-# Локальный стенд для проверки: фронт, бэк и тестовый Alertmanager.
-# Переменные берутся из файла .env рядом.
+# Локальный стенд для проверки: тестовый Alertmanager, бэкенд и фронтенд.
+# Переменные берутся из файла .env рядом. Авторизация не нужна.
+#
+# Запуск:   docker compose up --build -d
+# Логи:     docker compose logs -f backend
+# Стоп:     docker compose down
+#
+# Порты по умолчанию: фронт :8080, бэк :8001, alertmanager :9093.
+# Если порт занят другим проектом — поменяй *_PORT в .env (см. ниже про 8000).
 services:
   alertmanager:
     image: prom/alertmanager:latest
@@ -10,17 +17,28 @@ services:
       - "${ALERTMANAGER_PORT:-9093}:9093"
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      # Не генерировать provenance/SBOM-аттестации — это тот самый шаг
+      # "resolving provenance for metadata file", на котором сборка подвисает.
+      provenance: false
+      sbom: false
     env_file: .env
+    # На хосте порт 8000 часто занят (у тебя его держал чужой проект lock-stats),
+    # поэтому дефолт — 8001. Фронт ходит на бэк по внутренней сети (backend:8000),
+    # так что смена хост-порта на работу приложения не влияет.
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - "${BACKEND_PORT:-8001}:8000"
     volumes:
       - ./data/:/app/.hub-repo
     depends_on:
       - alertmanager
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      provenance: false
+      sbom: false
     environment:
       - BACKEND_URL=http://backend:8000
     ports:

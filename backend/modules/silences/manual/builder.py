@@ -1,9 +1,9 @@
 """Сборка тела разового silence — даты уже заданы, просто кладём в формат AM."""
 from ..am_format import matchers_to_am, to_am_time
-from ..models import OnetimeRequest
+from ..models import ManualRequest
 
 
-def build_onetime(req: OnetimeRequest) -> dict:
+def build_manual(req: ManualRequest) -> dict:
     return {
         "matchers": matchers_to_am(req.matchers),
         "startsAt": to_am_time(req.starts_at),

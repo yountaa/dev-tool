@@ -48,6 +48,11 @@ async def active_silences(env: str) -> list[dict]:
     return [s for s in silences if s.get("status", {}).get("state") in ("active", "pending")]
 
 
+async def list_alerts(env: str) -> list[dict]:
+    """Текущие алерты стенда (вкладка «Алерты» и автоподсказки matchers)."""
+    return (await _request("GET", env, "/api/v2/alerts")).json()
+
+
 async def create_silence(env: str, payload: dict) -> str:
     """Создать silence, вернуть его id из AM."""
     return (await _request("POST", env, "/api/v2/silences", json=payload)).json().get("silenceID", "")

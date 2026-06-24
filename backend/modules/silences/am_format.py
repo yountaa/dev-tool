@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 # Тип и id конфига прячем в начало комментария: «[schedule:ab12] текст».
 # По метке потом понимаем — разовый silence или по расписанию, и какой конфиг.
-_TAG_RE = re.compile(r"^\[(onetime|schedule):([0-9a-f]+)\]\s*(.*)$", re.S)
+_TAG_RE = re.compile(r"^\[(manual|schedule):([0-9a-f]+)\]\s*(.*)$", re.S)
 
 
 def tag_comment(kind: str, cfg_id: str, name: str, text: str) -> str:

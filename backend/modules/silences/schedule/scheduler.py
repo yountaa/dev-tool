@@ -13,8 +13,8 @@ from apscheduler.triggers.cron import CronTrigger
 from .. import config, save_hub
 from ..am_format import parse_comment, same_silence, tag_comment
 from ..client import AlertmanagerError, active_silences, create_silence
-from ..models import OnetimeRequest, ScheduleRequest
-from ..onetime.builder import build_onetime
+from ..models import ManualRequest, ScheduleRequest
+from ..manual.builder import build_manual
 from .builder import build_schedule
 
 log = logging.getLogger("silences.scheduler")
@@ -44,7 +44,7 @@ async def apply_config(cfg) -> None:
         log.info("[%s] поставлено %d silence по расписанию %s", cfg.env, len(to_create), cfg.id)
 
 
-async def reconcile_onetime(cfg) -> None:
+async def reconcile_manual(cfg) -> None:
     """До-ставить разовый silence, если он включён, время не прошло, а в AM его нет.
 
     Нужно на случай, когда AM лежал в момент создания правила.
@@ -58,13 +58,13 @@ async def reconcile_onetime(cfg) -> None:
 
     for s in await active_silences(cfg.env):
         kind, sid, _ = parse_comment(s.get("comment", ""))
-        if kind == "onetime" and sid == cfg.id:
+        if kind == "manual" and sid == cfg.id:
             return  # уже стоит в AM
 
-    body = build_onetime(OnetimeRequest(**cfg.payload))
-    body["comment"] = tag_comment("onetime", cfg.id, cfg.payload.get("name", ""), body["comment"])
+    body = build_manual(ManualRequest(**cfg.payload))
+    body["comment"] = tag_comment("manual", cfg.id, cfg.payload.get("name", ""), body["comment"])
     am_id = await create_silence(cfg.env, body)
-    save_hub.save("onetime", cfg.env, cfg.payload, cfg_id=cfg.id,
+    save_hub.save("manual", cfg.env, cfg.payload, cfg_id=cfg.id,
                   enabled=True, am_id=am_id, created_at=cfg.created_at, actor="scheduler", action="доставил")
     log.info("[%s] до-ставлен разовый silence %s", cfg.env, cfg.id)
 
@@ -78,10 +78,10 @@ async def run_once() -> None:
                 await apply_config(cfg)
             except AlertmanagerError as e:
                 log.warning("[%s] AM недоступен, повторю позже: %s", cfg.env, e)
-    for cfg in save_hub.list_configs("onetime"):
+    for cfg in save_hub.list_configs("manual"):
         if cfg.enabled:
             try:
-                await reconcile_onetime(cfg)
+                await reconcile_manual(cfg)
             except AlertmanagerError as e:
                 log.warning("[%s] AM недоступен, повторю позже: %s", cfg.env, e)
 
