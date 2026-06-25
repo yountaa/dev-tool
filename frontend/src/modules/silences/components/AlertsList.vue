@@ -6,6 +6,7 @@
 // Раскрытие показывает expr, аннотации, статические лейблы и сработавшие серии.
 // Только просмотр — отсюда ничего не меняем.
 import { ref, computed, watch } from 'vue'
+import { fmtDt } from '../../../shared/time.js'
 
 const props = defineProps({
   env: { type: String, required: true },
@@ -39,13 +40,6 @@ function fmtFor(s) {
   if (!s) return ''
   const m = Math.round(s / 60)
   return m >= 60 ? `${Math.round(m / 60)}ч` : `${m}м`
-}
-function fmtDt(s) {
-  if (!s) return ''
-  const d = new Date(s)
-  if (isNaN(d)) return s
-  const p = (n) => String(n).padStart(2, '0')
-  return `${p(d.getDate())}.${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`
 }
 function keyOf(a, i) {
   return a.name + i

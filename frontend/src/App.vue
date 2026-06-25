@@ -5,6 +5,7 @@
 import { ref, computed, watchEffect, onMounted } from 'vue'
 import { modules } from './modules/registry.js'
 import { http } from './shared/api.js'
+import { setTz } from './shared/time.js'
 
 const activeId = ref(modules[0]?.id)
 const active = computed(() => modules.find((m) => m.id === activeId.value))
@@ -21,6 +22,7 @@ onMounted(async () => {
     const info = await http.get('/silences/me')
     me.value = info.name || ''
     auth.value = !!info.auth
+    setTz(info.tz) // таймзона показа дат (МСК) — общая для всех вкладок
   } catch (e) {
     /* бэкенд недоступен — оставляем пустым */
   }

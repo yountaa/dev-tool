@@ -15,8 +15,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import config
-from .models import StoredConfig
+from .. import config
+from ..models import StoredConfig
 
 log = logging.getLogger("silences.save_hub")
 
@@ -363,31 +363,6 @@ def cleanup(history_days: int, old_days: int) -> dict:
     return removed
 
 
-def _matchers_key(matchers: list) -> set:
-    """Набор матчеров без учёта порядка — для сравнения правил."""
-    return {(m.get("name"), m.get("value"), bool(m.get("isRegex"))) for m in (matchers or [])}
-
-
-def find_duplicate(kind: str, env: str, payload: dict, exclude_id: str | None = None):
-    """Уже есть правило с такими же матчерами и концом алертинга? Вернуть его (или None).
-
-    manual — сравниваем по ends_at, schedule — по набору окон.
-    """
-    new_matchers = _matchers_key(payload.get("matchers"))
-    for cfg in list_configs(kind, env):
-        if cfg.id == exclude_id:
-            continue
-        if _matchers_key(cfg.payload.get("matchers")) != new_matchers:
-            continue
-        if kind == "manual":
-            if cfg.payload.get("ends_at") == payload.get("ends_at"):
-                return cfg
-        else:
-            if cfg.payload.get("windows") == payload.get("windows"):
-                return cfg
-    return None
-
-
 def get_config(kind: str, env: str, cfg_id: str) -> StoredConfig | None:
     """Достать один конфиг по id. None — если такого файла нет."""
     file = _path(env, kind, cfg_id)
@@ -422,3 +397,14 @@ def delete(kind: str, env: str, cfg_id: str, actor: str = "dev-tool") -> bool:
         _commit_push([rel_old, rel_new], f"{actor} удалил {kind} «{name}» ({env}/{cfg_id})", actor)
         _record(env, actor, "удалил", kind, name, before, None)
     return True
+
+
+# --- Лок шедулера ------------------------------------------------------------
+# В локальном режиме нода одна — координировать нечего. Заглушки нужны, чтобы
+# шедулер звал их одинаково при любом хранилище (см. save_hub-диспетчер).
+def try_scheduler_lock() -> bool:
+    return True
+
+
+def release_scheduler_lock() -> None:
+    pass

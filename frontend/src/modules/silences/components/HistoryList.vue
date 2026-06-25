@@ -3,6 +3,7 @@
 // Минимально: пользователь · действие · имя · время. Раскрытие — две колонки
 // before | after со ВСЕМИ полями: пустая сторона = те же поля, но без значений.
 import { ref, computed, watch } from 'vue'
+import { fmtDt } from '../../../shared/time.js'
 
 const props = defineProps({
   env: { type: String, required: true },
@@ -12,14 +13,6 @@ const emit = defineEmits(['reload'])
 
 const query = ref('')
 const openKey = ref(null)
-
-function fmtDt(s) {
-  if (!s) return ''
-  const d = new Date(s)
-  if (isNaN(d)) return s
-  const p = (n) => String(n).padStart(2, '0')
-  return `${p(d.getDate())}.${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`
-}
 
 // Действия → английские подписи.
 const ACT = { создал: 'created', изменил: 'edited', удалил: 'deleted',

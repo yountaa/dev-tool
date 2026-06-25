@@ -1,5 +1,9 @@
 data/
-.env*
+.env
 .venv
 auth/
 data/
+docker-compose.auth.yml
+alert.rules.yml
+alertmanager.yml
+prometheus.yml

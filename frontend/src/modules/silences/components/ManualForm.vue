@@ -81,7 +81,7 @@ async function submit() {
     <div class="card">
       <div class="card-head">
         <span class="card-title">Period</span>
-        <span class="card-hint">локальное время</span>
+        <span class="card-hint">московское время (МСК)</span>
       </div>
       <div class="grid-2">
         <div class="field">

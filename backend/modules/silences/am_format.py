@@ -1,6 +1,12 @@
 """Хелперы под формат Alertmanager. Общие для разового и расписания."""
 import re
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
+from . import config
+
+# Таймзона, в которой задаётся время в вебе (по умолчанию Europe/Moscow).
+_TZ = ZoneInfo(config.SILENCE_TZ)
 
 # Тип и id конфига прячем в начало комментария: «[schedule:ab12] текст».
 # По метке потом понимаем — разовый silence или по расписанию, и какой конфиг.
@@ -25,7 +31,15 @@ def parse_comment(comment: str):
 
 
 def to_am_time(dt: datetime) -> str:
-    """Время в формате AM: UTC с Z на конце."""
+    """Время в формате AM: UTC с Z на конце.
+
+    Из веба (datetime-local) время приходит БЕЗ таймзоны (naive) — это «настенное»
+    московское время (SILENCE_TZ). Помечаем его этой зоной, иначе astimezone взял бы
+    системную зону контейнера (UTC) и silence уехал бы на 3 часа. Расписание уже
+    отдаёт tz-aware время — для него .replace не сработает, поведение не меняется.
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_TZ)
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 

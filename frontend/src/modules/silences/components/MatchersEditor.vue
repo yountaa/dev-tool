@@ -7,6 +7,7 @@
 // под ОСТАЛЬНЫЕ заполненные matcher-ы. Так после alertname=HighCPUUsage следующий
 // matcher предложит только лейблы/значения именно этих алертов, а не вообще все.
 import { computed } from 'vue'
+import AutocompleteInput from './AutocompleteInput.vue'
 
 const props = defineProps({
   modelValue: { type: Array, required: true },
@@ -100,14 +101,8 @@ function toggleRegex(i) {
 
     <div v-for="(m, i) in modelValue" :key="i" class="matcher-row">
       <!-- Имена и значения каскадные: зависят от уже заполненных строк. -->
-      <input class="input" :class="{ invalid: showErrors && !m.name }" v-model="m.name" :list="'lbl-names-' + i" placeholder="alertname" />
-      <datalist :id="'lbl-names-' + i">
-        <option v-for="n in namesFor(i)" :key="n" :value="n" />
-      </datalist>
-      <input class="input" :class="{ invalid: showErrors && !m.value }" v-model="m.value" :list="'lbl-vals-' + i" placeholder="HighCPUUsage" />
-      <datalist :id="'lbl-vals-' + i">
-        <option v-for="v in valuesFor(i)" :key="v" :value="v" />
-      </datalist>
+      <AutocompleteInput v-model="m.name" :options="namesFor(i)" :invalid="showErrors && !m.name" placeholder="alertname" />
+      <AutocompleteInput v-model="m.value" :options="valuesFor(i)" :invalid="showErrors && !m.value" placeholder="HighCPUUsage" />
       <button
         class="toggle"
         :class="{ on: m.isRegex }"

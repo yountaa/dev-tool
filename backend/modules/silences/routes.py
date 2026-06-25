@@ -37,8 +37,12 @@ def environments():
 
 @router.get("/me")
 def me(user: str = Depends(current_user)):
-    """Кто залогинен (для показа в форме). auth=true — имя пришло из Keycloak через прокси."""
-    return {"name": user, "auth": config.AUTH_ENABLED}
+    """Кто залогинен (для показа в форме). auth=true — имя пришло из Keycloak через прокси.
+
+    tz — таймзона, в которой веб задаёт и показывает время (SILENCE_TZ): фронт
+    форматирует все даты в ней, чтобы показ не зависел от зоны браузера.
+    """
+    return {"name": user, "auth": config.AUTH_ENABLED, "tz": config.SILENCE_TZ}
 
 
 # --- Правила (читаем и считаем локально, AM не дёргаем) -----------------------

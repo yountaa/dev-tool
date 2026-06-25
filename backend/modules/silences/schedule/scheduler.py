@@ -70,25 +70,36 @@ async def reconcile_manual(cfg) -> None:
 
 
 async def run_once() -> None:
-    """Один тик: поставить недостающие silence по всем включённым правилам."""
+    """Один тик: поставить недостающие silence по всем включённым правилам.
+
+    При нескольких нодах тикает только одна — берём общий лок хранилища
+    (в postgres это advisory-lock, в local — всегда свободен). Так две ноды не
+    поставят один и тот же silence и не запишут историю дважды.
+    """
     save_hub.ensure_repo()
-    for cfg in save_hub.list_configs("schedule"):
-        if cfg.enabled:
-            try:
-                await apply_config(cfg)
-            except AlertmanagerError as e:
-                log.warning("[%s] AM недоступен, повторю позже: %s", cfg.env, e)
-    for cfg in save_hub.list_configs("manual"):
-        if cfg.enabled:
-            try:
-                await reconcile_manual(cfg)
-            except AlertmanagerError as e:
-                log.warning("[%s] AM недоступен, повторю позже: %s", cfg.env, e)
+    if not save_hub.try_scheduler_lock():
+        log.info("тик пропущен — лок занят другой нодой")
+        return  # тик выполняет другая нода
+    try:
+        for cfg in save_hub.list_configs("schedule"):
+            if cfg.enabled:
+                try:
+                    await apply_config(cfg)
+                except AlertmanagerError as e:
+                    log.warning("[%s] AM недоступен, повторю позже: %s", cfg.env, e)
+        for cfg in save_hub.list_configs("manual"):
+            if cfg.enabled:
+                try:
+                    await reconcile_manual(cfg)
+                except AlertmanagerError as e:
+                    log.warning("[%s] AM недоступен, повторю позже: %s", cfg.env, e)
+    finally:
+        save_hub.release_scheduler_lock()
 
 
 def run_cleanup() -> None:
     """Авто-очистка старой истории и архива удалённых правил (по CLEANUP_CRON)."""
-    save_hub.cleanup(config.HISTORY_RETENTION_DAYS, config.OLD_RETENTION_DAYS)
+    save_hub.cleanup(config.HISTORY_RETENTION_DAYS, config.DELETED_RULES_RETENTION_DAYS)
 
 
 def start() -> None:

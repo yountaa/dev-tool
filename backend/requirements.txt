@@ -5,3 +5,4 @@ python-dotenv
 apscheduler
 pydantic
 tzdata
+psycopg2-binary   # драйвер Postgres (нужен только при STORAGE_BACKEND=postgres)
