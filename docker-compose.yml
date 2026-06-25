@@ -51,7 +51,9 @@ services:
   frontend:
     build: ./frontend
     environment:
-      - BACKEND_URL=http://backend:8000
+      # Куда внутренний nginx фронта проксирует API. По умолчанию — сервис backend
+      # в этой же сети; переопредели BACKEND_URL в .env, если бек на другом адресе.
+      - BACKEND_URL=${BACKEND_URL:-http://backend:8000}
     ports:
       - "${FRONTEND_PORT:-8080}:80"
     depends_on:
