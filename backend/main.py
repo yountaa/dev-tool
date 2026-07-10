@@ -8,10 +8,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import logging_setup
+from access import router as access_router
 from modules.silences import save_hub
 from modules.silences.client import AlertmanagerError
 from modules.silences.routes import router as silences_router
 from modules.silences.schedule import scheduler
+from modules.victoria.client import VictoriaError
+from modules.victoria.routes import router as victoria_router
 
 logging_setup.setup()  # NDJSON в stdout
 log = logging.getLogger("silences.app")
@@ -58,8 +61,16 @@ async def am_error(request: Request, exc: AlertmanagerError):
     return JSONResponse(status_code=502, content={"detail": str(exc)})
 
 
+@app.exception_handler(VictoriaError)
+async def vm_error(request: Request, exc: VictoriaError):
+    # Компонент VM недоступен/не настроен — понятный 502, а не стектрейс.
+    return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+
 # --- Подключение модулей (1 модуль = 1 router = 1 вкладка) ---------------------
+app.include_router(access_router)     # RBAC уровня приложения: /access/me
 app.include_router(silences_router)
+app.include_router(victoria_router)
 
 
 @app.get("/health")

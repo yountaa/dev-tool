@@ -46,6 +46,44 @@
   color-scheme: light;
 }
 
+/* --- Пространства (data-space на <html>) ------------------------------------
+   Активная вкладка задаёт data-space, и мы перекрашиваем всю палитру, чтобы
+   модуль ощущался как отдельное место. Указываем тему явно ([data-theme=...]),
+   иначе тёмный оверрайд «протёк» бы в светлую тему (одинаковая специфичность).
+   silences — палитра по умолчанию (фиолетовая), отдельного блока не требует.
+   victoria — тёплая коралловая (цвет Victoria Metrics). */
+:root[data-theme="dark"][data-space="victoria"] {
+  --bg: #2b2622;
+  --bg-rail: #241f1c;
+  --panel: #37302c;
+  --panel-2: #2e2825;
+  --border: #4d4239;
+  --border-soft: #3f362f;
+  --accent: #ff7a59;
+  --accent-bright: #ffa07d;
+  --accent-soft: rgba(255, 122, 89, 0.18);
+  --chip: #37302c;
+  --track: #4d4239;
+}
+:root[data-theme="light"][data-space="victoria"] {
+  --bg: #fbf6f3;
+  --bg-rail: #f4ebe6;
+  --panel: #ffffff;
+  --panel-2: #f7efeb;
+  --border: #ecdcd3;
+  --border-soft: #f2e6df;
+  --accent: #d1502f;
+  --accent-bright: #b8401f;
+  --accent-soft: rgba(209, 80, 47, 0.12);
+  --chip: #f4ebe6;
+  --track: #ecdcd3;
+}
+
+/* Victoria — рабочая область шире (как дашборд Prometheus): Query-графику и
+   таблице targets нужно больше места. Специфичность html[...] перебивает scoped
+   .content из App.vue. */
+html[data-space="victoria"] .content { max-width: 1360px; }
+
 * { box-sizing: border-box; }
 
 body {

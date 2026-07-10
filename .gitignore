@@ -7,3 +7,4 @@ docker-compose.auth.yml
 alert.rules.yml
 alertmanager.yml
 prometheus.yml
+docs/

@@ -8,6 +8,8 @@ export default defineConfig({
   server: {
     proxy: {
       '/silences': 'http://localhost:8000',
+      '/victoria': 'http://localhost:8000',
+      '/access': 'http://localhost:8000',
       '/health': 'http://localhost:8000',
     },
   },

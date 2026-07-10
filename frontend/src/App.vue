@@ -7,29 +7,51 @@ import { modules } from './modules/registry.js'
 import { http } from './shared/api.js'
 import { setTz } from './shared/time.js'
 
-const activeId = ref(modules[0]?.id)
-const active = computed(() => modules.find((m) => m.id === activeId.value))
-
 // Кто залогинен. auth=true — вход через Keycloak (oauth2-proxy), показываем имя.
 // auth=false — локальный режим без входа (имя создателя вводится руками).
 const me = ref('')
 const auth = ref(false)
 
+// RBAC: список id модулей, доступных пользователю (приходит из /access/me).
+// null = ограничений нет/бэкенд недоступен — показываем все вкладки (dev-режим).
+const allowed = ref(null)
+const visible = computed(() =>
+  allowed.value ? modules.filter((m) => allowed.value.includes(m.id)) : modules,
+)
+
+// Запоминаем выбранную вкладку между перезагрузками (валидируем — модуль мог исчезнуть).
+const savedModule = localStorage.getItem('activeModule')
+const activeId = ref(modules.some((m) => m.id === savedModule) ? savedModule : modules[0]?.id)
+const active = computed(() => visible.value.find((m) => m.id === activeId.value))
+
 const theme = ref('dark')
 onMounted(async () => {
   theme.value = localStorage.getItem('theme') || 'dark'
   try {
-    const info = await http.get('/silences/me')
+    // Один запрос уровня приложения: имя, авторизация, таймзона и доступные вкладки.
+    const info = await http.get('/access/me')
     me.value = info.name || ''
     auth.value = !!info.auth
     setTz(info.tz) // таймзона показа дат (МСК) — общая для всех вкладок
+    allowed.value = Array.isArray(info.modules) ? info.modules : null
+    // Если активная вкладка недоступна пользователю — переключаемся на первую доступную.
+    if (!visible.value.some((m) => m.id === activeId.value)) {
+      activeId.value = visible.value[0]?.id
+    }
   } catch (e) {
-    /* бэкенд недоступен — оставляем пустым */
+    /* бэкенд недоступен — оставляем пустым, показываем все вкладки */
   }
 })
 watchEffect(() => {
   document.documentElement.setAttribute('data-theme', theme.value)
   localStorage.setItem('theme', theme.value)
+})
+// Пространство-цвет: активная вкладка задаёт data-space на <html>, а theme.css
+// перекрашивает под неё всю палитру (акцент/рельс). Ощущение отдельного места.
+// Заодно запоминаем вкладку — при перезагрузке вернёмся сюда, а не на первый модуль.
+watchEffect(() => {
+  document.documentElement.setAttribute('data-space', activeId.value || '')
+  if (activeId.value) localStorage.setItem('activeModule', activeId.value)
 })
 function toggleTheme() {
   theme.value = theme.value === 'dark' ? 'light' : 'dark'
@@ -52,7 +74,7 @@ function toggleTheme() {
       <!-- Список модулей -->
       <div class="modules">
         <button
-          v-for="m in modules"
+          v-for="m in visible"
           :key="m.id"
           class="mod"
           :class="{ active: m.id === activeId }"
@@ -97,6 +119,17 @@ function toggleTheme() {
         </div>
       </header>
       <component :is="active.component" :me="me" :auth="auth" />
+    </main>
+
+    <!-- RBAC: доступных вкладок нет (пустой modules из /access/me) — не пустой экран,
+         а понятное сообщение. active становится undefined только в этом случае. -->
+    <main class="content" v-else>
+      <div class="noaccess">
+        <h2>Нет доступа</h2>
+        <p>У вашей учётной записи нет доступа ни к одной вкладке. Нужен доступ к
+          соответствующей группе — обратитесь к администратору.</p>
+        <p v-if="me" class="who">вы вошли как <b>{{ me }}</b></p>
+      </div>
     </main>
   </div>
 </template>
@@ -149,6 +182,8 @@ function toggleTheme() {
 .theme .mod-name { text-transform: uppercase; letter-spacing: 0.04em; font-size: 12px; }
 
 .content { max-width: 1040px; margin: 0 auto; padding: 26px 30px; }
+/* На узких экранах ужимаем поля, чтобы не съедать и без того малую ширину. */
+@media (max-width: 720px) { .content { padding: 18px 14px; } }
 .head { margin-bottom: 22px; display: flex; align-items: center; }
 .head-title { font-size: 17px; font-weight: 700; }
 .head-sub { color: var(--text-mute); font-family: var(--mono); font-size: 13px; margin-left: 8px; }
@@ -164,4 +199,10 @@ function toggleTheme() {
 .user .u-name { font-family: var(--mono); color: var(--text); }
 .user.dim { padding: 6px 14px; }
 .user.dim .u-name { color: var(--text-mute); }
+
+/* Экран «нет доступа» (RBAC не пустил ни к одной вкладке). */
+.noaccess { max-width: 460px; margin: 12vh auto 0; text-align: center; }
+.noaccess h2 { font-size: 20px; margin: 0 0 10px; }
+.noaccess p { color: var(--text-dim); font-size: 14px; line-height: 1.5; margin: 0 0 8px; }
+.noaccess .who { color: var(--text-mute); font-family: var(--mono); font-size: 13px; margin-top: 14px; }
 </style>

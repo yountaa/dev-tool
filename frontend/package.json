@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "uplot": "^1.6.30",
     "vue": "^3.4.21"
   },
   "devDependencies": {
