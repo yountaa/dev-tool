@@ -91,6 +91,46 @@ def current_groups(request: Request) -> list[str]:
     return _groups_of_var(raw)
 
 
+# --- Диагностика: что реально дошло до бэкенда ---------------------------------
+def snapshot(request: Request) -> dict:
+    """Сводка авторизации по запросу: кто пришёл, какие заголовки дошли, размеры.
+
+    Одна и та же сводка идёт и в логи, и в ответ /access/debug — в браузере и в
+    логе видно одно и то же. Значения cookie не раскрываем (там сессия) — только
+    размер: по нему видно, что прокси вообще что-то прислал и насколько «толстый»
+    запрос (большие cookie + группы упираются в лимиты буферов по дороге).
+    """
+    raw_user = request.headers.get(AUTH_USER_HEADER)
+    raw_groups = request.headers.get(AUTH_GROUPS_HEADER)
+    return {
+        "auth_enabled": AUTH_ENABLED,
+        "user": current_user(request),          # кем запрос станет в приложении
+        "user_header": AUTH_USER_HEADER,
+        "user_header_value": raw_user,          # None = заголовок НЕ дошёл
+        "email": request.headers.get("X-Forwarded-Email"),
+        "forwarded_user": request.headers.get("X-Forwarded-User"),
+        "groups_header": AUTH_GROUPS_HEADER,
+        "groups_n": len(current_groups(request)),
+        "groups_bytes": len(raw_groups) if raw_groups is not None else None,
+        "cookie_bytes": len(request.headers.get("Cookie", "")),
+        "headers_total_bytes": sum(len(k) + len(v) for k, v in request.headers.raw),
+    }
+
+
+def request_log_fields(request: Request) -> dict:
+    """Короткие поля про личность для строки access-лога КАЖДОГО запроса.
+
+    user       — кем запрос был для приложения (атрибуция «кто что сделал»);
+    auth_hdr   — дошёл ли заголовок с именем (false при auth_enabled=true = потеря);
+    groups_n   — сколько групп пришло (0 при включённом RBAC — подозрительно).
+    """
+    return {
+        "user": current_user(request),
+        "auth_hdr": request.headers.get(AUTH_USER_HEADER) is not None,
+        "groups_n": len(current_groups(request)),
+    }
+
+
 # --- Логика доступа -----------------------------------------------------------
 def is_admin(groups: list[str]) -> bool:
     """В одной из админ-групп? RBAC_ADMIN_GROUP — можно несколько через запятую."""
@@ -173,15 +213,15 @@ def me(request: Request):
     if AUTH_ENABLED and name == AUTH_FALLBACK_USER:
         # Авторизация включена, но имя не пришло из заголовка → это и есть
         # «постоянно local»: oauth2-proxy не проставил заголовок или nginx его не
-        # пробросил. Логируем как аномалию, чтобы причина была видна сразу.
+        # пробросил. Логируем ПОЛНУЮ сводку: по cookie_bytes/groups_bytes видно,
+        # дошло ли от прокси хоть что-то (дошло всё, кроме имени ≠ не дошло ничего).
         logging_setup.event(
-            log, "auth.no_username_header", level=logging.WARNING,
-            expected_header=AUTH_USER_HEADER, groups_seen=len(groups),
+            log, "auth.no_username_header", level=logging.WARNING, **snapshot(request),
         )
     else:
         logging_setup.event(
             log, "auth.me",
-            user=name, auth=AUTH_ENABLED, groups=groups, admin=admin, modules=modules,
+            groups=groups, admin=admin, modules=modules, **snapshot(request),
         )
 
     return {
@@ -191,4 +231,65 @@ def me(request: Request):
         "groups": groups,
         "admin": admin,
         "modules": modules,
+    }
+
+
+@router.get("/debug")
+def debug(request: Request):
+    """Диагностика «почему я local»: показать, что РЕАЛЬНО дошло до бэкенда.
+
+    Открой /access/debug в браузере (через прокси, как обычный юзер) — сразу видно:
+    пришёл ли заголовок с именем, какие группы, каких размеров cookie, и подсказка,
+    на каком хопе искать потерю. Значения cookie/токенов не раскрываем — только размер
+    (это сессия; утечь в лог/скриншот она не должна).
+    """
+    snap = snapshot(request)
+    groups = current_groups(request)
+
+    # Все X-Forwarded-* как есть (токены — только размером).
+    received = {}
+    for key, value in request.headers.items():
+        if not key.lower().startswith("x-forwarded-"):
+            continue
+        if "token" in key.lower():
+            received[key] = f"<скрыто, {len(value)} байт>"
+        else:
+            received[key] = value
+
+    # Подсказка по цепочке: браузер → внешний nginx → oauth2-proxy → nginx фронта → бэкенд.
+    if not AUTH_ENABLED:
+        hint = ("AUTH_ENABLED=false: бэкенд вообще не читает заголовки — все запросы идут "
+                f"под фолбэком «{AUTH_FALLBACK_USER}». Проверь, что .env дошёл до контейнера "
+                "(событие auth.config на старте показывает действующие значения).")
+    elif not snap["user_header_value"]:  # нет заголовка ИЛИ пришёл пустым
+        hint = (f"Заголовок {AUTH_USER_HEADER} до бэкенда НЕ дошёл. Смотри access-лог nginx "
+                "фронта (authlog): если там user есть — потеря на хопе nginx→бэкенд; если "
+                "пустой — раньше (oauth2-proxy или внешний nginx). cookie_bytes/groups_bytes "
+                "подскажут, дошло ли остальное.")
+    else:
+        hint = f"Всё на месте: вы «{snap['user']}», групп: {len(groups)}."
+
+    logging_setup.event(log, "auth.debug", **snap)
+    return {
+        "resolved": {
+            "user": snap["user"],
+            "groups": groups,
+            "admin": is_admin(groups),
+            "modules": [m for m in KNOWN_MODULES if can_access(m, groups)],
+        },
+        "received": {
+            "x_forwarded": received,
+            "cookie_bytes": snap["cookie_bytes"],
+            "headers_total_bytes": snap["headers_total_bytes"],
+        },
+        "config": {
+            "auth_enabled": AUTH_ENABLED,
+            "rbac_enabled": RBAC_ENABLED,
+            "user_header": AUTH_USER_HEADER,
+            "groups_header": AUTH_GROUPS_HEADER,
+            "fallback_user": AUTH_FALLBACK_USER,
+            "admin_groups": RBAC_ADMIN_GROUPS,
+            "access_rules": ACCESS,
+        },
+        "hint": hint,
     }

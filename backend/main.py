@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import logging_setup
-from access import log_config as log_auth_config, router as access_router
+from access import log_config as log_auth_config, request_log_fields, router as access_router
 from modules.silences import save_hub
 from modules.silences.client import AlertmanagerError
 from modules.silences.routes import router as silences_router
@@ -43,7 +43,12 @@ app.add_middleware(
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    """Структурный лог каждого запроса (метод, путь, статус, длительность)."""
+    """Структурный лог каждого запроса: метод, путь, статус, длительность + КТО.
+
+    user/auth_hdr/groups_n в каждой строке — чтобы по логу всегда было видно, кем
+    запрос был для приложения и дошли ли заголовки личности от oauth2-proxy
+    (auth_hdr=false при включённой авторизации = имя потерялось по дороге).
+    """
     start = time.perf_counter()
     response = await call_next(request)
     logging_setup.event(
@@ -52,6 +57,7 @@ async def log_requests(request: Request, call_next):
         path=request.url.path,
         status=response.status_code,
         duration_ms=round((time.perf_counter() - start) * 1000, 1),
+        **request_log_fields(request),
     )
     return response
 
