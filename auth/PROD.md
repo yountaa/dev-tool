@@ -152,9 +152,15 @@ server {
    `proxy_set_header X-Forwarded-Groups $groups;`. У oauth2-proxy должен быть включён
    `--set-xauthrequest=true`, в Keycloak — маппер groups (см. шаг 2), иначе заголовок
    будет пустым.
-3. **Буферы — на уровне http**: и на заголовки запроса (cookie сессии), и
-   `proxy_buffer_size` — ответ subrequest'а `/oauth2/auth` несёт полный список групп,
-   он обязан влезть в буфер ответа, иначе вход ломается целиком. Значения — в образце.
+3. **Буферы.** Заголовки запроса (cookie сессии) — на уровне http. А буферы ответа
+   для `/oauth2/auth` — прямо В САМОЙ location (см. образец): ответ subrequest'а несёт
+   полный список групп и обязан влезть в `proxy_buffer_size`, иначе вход ломается
+   целиком — 500 на всё, в error.log «upstream sent too big header ...
+   subrequest: "/oauth2/auth"». Осторожно: `proxy_buffer_size` в `server {}`
+   ПЕРЕКРЫВАЕТ http-уровень — старые маленькие значения надо удалить.
+   И не гоняйте токены зря: `pass_access_token/set_authorization_header/`
+   `pass_authorization_header = false` — приложение их не использует, а они самые
+   толстые заголовки в этом ответе.
 4. **backend и oauth2-proxy не публиковать наружу**: весь трафик — только через внешний
    nginx → frontend. Прямой доступ к backend = подделка личности запросто.
 

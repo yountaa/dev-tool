@@ -21,12 +21,14 @@ export const victoriaApi = {
   queryRange: (env, expr, start, end, step, tenant) =>
     http.get(`/victoria/${env}/query_range?${qs({ query: expr, start, end, step, tenant })}`),
   labels: (env, tenant) => http.get(`/victoria/${env}/labels?${qs({ tenant })}`),
-  labelValues: (env, label, tenant) =>
-    http.get(`/victoria/${env}/label_values?${qs({ label, tenant })}`),
-  tsdb: (env, topn, tenant) => http.get(`/victoria/${env}/tsdb?${qs({ topn, tenant })}`),
+  labelValues: (env, label, tenant, limit) =>
+    http.get(`/victoria/${env}/label_values?${qs({ label, tenant, limit })}`),
+  // refresh=1 — перечитать мимо кэша бэкенда (кнопка «Обновить»)
+  tsdb: (env, topn, tenant, refresh) =>
+    http.get(`/victoria/${env}/tsdb?${qs({ topn, tenant, refresh: refresh ? 1 : '' })}`),
 
   // vmagent / vmalert
-  targets: (env) => http.get(`/victoria/${env}/targets`),
-  rules: (env) => http.get(`/victoria/${env}/rules`),
+  targets: (env, refresh) => http.get(`/victoria/${env}/targets?${qs({ refresh: refresh ? 1 : '' })}`),
+  rules: (env, refresh) => http.get(`/victoria/${env}/rules?${qs({ refresh: refresh ? 1 : '' })}`),
   alerts: (env) => http.get(`/victoria/${env}/alerts`),
 }

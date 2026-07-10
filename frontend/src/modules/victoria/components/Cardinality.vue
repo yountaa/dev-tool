@@ -6,6 +6,7 @@
 //   rate(vm_data_size_bytes)  — скорость роста → ETA = свободно / рост.
 // Если этих метрик нет в источнике (напр. обычный Prometheus) — прогноз скрыт.
 import { ref, computed, onMounted } from 'vue'
+import Skeleton from '../../../shared/Skeleton.vue'
 import { victoriaApi } from '../api.js'
 
 const props = defineProps({
@@ -19,18 +20,22 @@ const topn = ref(20)
 const loading = ref(true)
 const error = ref(null)
 
-onMounted(loadAll)
+onMounted(() => loadAll())
 
-async function loadAll() {
-  await Promise.all([loadTsdb(), loadForecast()])
+// refresh=true (кнопка «Обновить») — /status/tsdb перечитывается мимо кэша бэкенда.
+async function loadAll(refresh = false) {
+  await Promise.all([loadTsdb(refresh), loadForecast()])
 }
 
-async function loadTsdb() {
+async function loadTsdb(refresh = false) {
   loading.value = true
   error.value = null
   try {
-    const r = await victoriaApi.tsdb(props.env, topn.value, props.tenant)
-    data.value = r.data || {}
+    const r = await victoriaApi.tsdb(props.env, topn.value, props.tenant, refresh)
+    const d = r.data || {}
+    // Топ метрик сверяем с хранилищем, чтобы показывать только то, что реально лежит.
+    d.seriesCountByMetricName = await verifyMetricNames(d.seriesCountByMetricName)
+    data.value = d
   } catch (e) {
     error.value = e.message
   } finally {
@@ -38,12 +43,36 @@ async function loadTsdb() {
   }
 }
 
+// /status/tsdb считает статистику за сутки: туда попадают и серии, которых уже нет
+// (перезапуски подов, чужой мусор). Одним instant-запросом пересчитываем серии
+// каждого имени именно в НАШЕМ тенанте/неймспейсе и оставляем только те метрики,
+// что реально лежат в хранилище сейчас, — ничего не придумываем.
+async function verifyMetricNames(list) {
+  const names = (list || []).map((x) => x.name).filter(Boolean)
+  if (!names.length) return []
+  try {
+    const expr = `count({__name__=~"${names.join('|')}"}) by (__name__)`
+    const r = await victoriaApi.query(props.env, expr, null, props.tenant)
+    const counts = new Map()
+    for (const s of r.data?.result || []) counts.set(s.metric.__name__, parseFloat(s.value[1]))
+    return names
+      .filter((n) => counts.get(n) > 0)
+      .map((n) => ({ name: n, value: counts.get(n) }))
+      .sort((a, b) => b.value - a.value)
+  } catch (e) {
+    return list || [] // сверка не удалась — показываем как отдал VM
+  }
+}
+
 async function loadForecast() {
   try {
+    // Агрегируем на стороне VM: у vm_data_size_bytes несколько серий на ноду
+    // (label type=indexdb/storage/…) — без sum() бралась бы одна случайная, и
+    // цифры «занято/рост» были бы выдуманными. Заодно ответ на порядок меньше.
     const [free, size, growth] = await Promise.all([
-      victoriaApi.query(props.env, 'vm_free_disk_space_bytes', null, props.tenant),
-      victoriaApi.query(props.env, 'vm_data_size_bytes', null, props.tenant),
-      victoriaApi.query(props.env, 'rate(vm_data_size_bytes[1d])', null, props.tenant),
+      victoriaApi.query(props.env, 'min(vm_free_disk_space_bytes) by (instance)', null, props.tenant),
+      victoriaApi.query(props.env, 'sum(vm_data_size_bytes) by (instance)', null, props.tenant),
+      victoriaApi.query(props.env, 'sum(rate(vm_data_size_bytes[1d])) by (instance)', null, props.tenant),
     ])
     const by = {}
     const put = (resp, key) => {
@@ -69,7 +98,7 @@ const total = computed(() => {
 const lists = computed(() => {
   const d = data.value || {}
   return [
-    ['Топ метрик по числу серий', d.seriesCountByMetricName || []],
+    ['Топ метрик по числу серий (сверено с хранилищем)', d.seriesCountByMetricName || []],
     ['Топ лейблов по числу серий', d.seriesCountByLabelName || []],
     ['Топ пар label=value', d.seriesCountByLabelValuePair || []],
     ['Число значений у лейбла', d.labelValueCountByLabelName || []],
@@ -108,14 +137,14 @@ function growthPerDay(n) {
 
     <div class="bar">
       <label class="lbl">Показывать топ
-        <select class="input topn" v-model.number="topn" @change="loadTsdb">
+        <select class="input topn" v-model.number="topn" @change="loadTsdb()">
           <option :value="10">10</option>
           <option :value="20">20</option>
           <option :value="50">50</option>
         </select>
       </label>
       <span v-if="total !== null" class="total">Всего серий: <b>{{ total.toLocaleString() }}</b></span>
-      <button class="btn btn-sm" @click="loadAll">Обновить</button>
+      <button class="btn btn-sm" :disabled="loading" @click="loadAll(true)">{{ loading ? 'Обновляю…' : 'Обновить' }}</button>
     </div>
 
     <!-- Прогноз заполнения дисков по нодам -->
@@ -139,7 +168,10 @@ function growthPerDay(n) {
       </div>
     </div>
 
-    <div v-if="loading" class="empty">Загрузка…</div>
+    <!-- Загрузка — скелет-плашки на месте будущих карточек. -->
+    <div v-if="loading" class="grid">
+      <div v-for="i in 4" :key="i" class="card"><Skeleton :lines="6" :height="18" /></div>
+    </div>
 
     <!-- Топ-списки кардинальности -->
     <div v-else class="grid">

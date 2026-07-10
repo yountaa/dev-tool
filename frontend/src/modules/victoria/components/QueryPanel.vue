@@ -1,3 +1,12 @@
+<script>
+// Кэш имён метрик для автодополнения: ОБЩИЙ для всех панелей (обычный <script>
+// выполняется один раз на модуль, в отличие от <script setup> — тот на каждую
+// панель). Без него каждая новая панель и каждое переключение вкладки заново
+// тянули бы список из тысяч имён.
+const namesCache = new Map() // 'env|tenant' -> { at, names }
+const NAMES_TTL = 5 * 60 * 1000
+</script>
+
 <script setup>
 // Одна панель запроса «как в Prometheus»: ввод PromQL/MetricsQL с живым
 // автодополнением (метрики + функции), режимы Graph (range → uPlot) и Table
@@ -7,6 +16,7 @@
 import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
+import Skeleton from '../../../shared/Skeleton.vue'
 import { victoriaApi } from '../api.js'
 
 const props = defineProps({
@@ -93,9 +103,14 @@ let ro = null
 let metricsTried = false
 async function loadMetrics() {
   metricsTried = true
+  const key = props.env + '|' + (props.tenant || '')
+  const hit = namesCache.get(key)
+  if (hit && Date.now() - hit.at < NAMES_TTL) { metricNames.value = hit.names; return }
   try {
-    const r = await victoriaApi.labelValues(props.env, '__name__', props.tenant)
+    // limit просим ещё у VM — не гоняем по сети сотни тысяч имён ради подсказок.
+    const r = await victoriaApi.labelValues(props.env, '__name__', props.tenant, MAX_METRICS)
     metricNames.value = Array.isArray(r.data) ? r.data.slice(0, MAX_METRICS) : []
+    namesCache.set(key, { at: Date.now(), names: metricNames.value })
   } catch (e) {
     metricNames.value = [] // подсказок не будет, но поле работает
   }
@@ -406,8 +421,10 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
     <div v-if="error" class="msg msg-err">{{ error }}</div>
     <div v-if="truncated" class="trunc">{{ truncated }}</div>
 
-    <!-- Graph -->
-    <div v-show="mode === 'graph'" class="card">
+    <!-- Graph: первая загрузка — скелет на месте графика; при повторном запросе
+         старый график остаётся, но пригашен (dim), чтобы было видно ожидание. -->
+    <div v-show="mode === 'graph'" class="card" :class="{ dim: loading && chartSeries.length }">
+      <Skeleton v-if="loading && !chartSeries.length" :lines="1" :height="340" />
       <div ref="chartEl" class="chart"></div>
       <div v-if="!chartSeries.length && !loading" class="empty">Нет данных — выполни запрос.</div>
 
@@ -426,8 +443,10 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
       </div>
     </div>
 
-    <!-- Table -->
-    <div v-if="mode === 'table' && instant.length" class="card">
+    <!-- Table: первая загрузка — скелет-строки; при повторном запросе старая
+         таблица остаётся, но пригашена. -->
+    <div v-if="mode === 'table' && loading && !instant.length" class="card"><Skeleton :lines="6" :height="24" /></div>
+    <div v-else-if="mode === 'table' && instant.length" class="card" :class="{ dim: loading }">
       <div class="tbl-scroll">
         <table class="tbl">
           <thead><tr><th>Element</th><th class="val">Value</th></tr></thead>
@@ -517,6 +536,9 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
 .meta { font-family: var(--mono); font-size: 12px; color: var(--text-mute); margin-left: auto; }
 
 .chart { width: 100%; min-height: 0; }
+
+/* Пока идёт повторный запрос — пригашаем старый результат. */
+.dim { opacity: 0.5; transition: opacity 0.15s; }
 
 /* Легенда под графиком — серии столбиком с цветом и полными лейблами */
 .legend { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-soft); display: flex; flex-direction: column; gap: 4px; }

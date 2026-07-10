@@ -3,10 +3,14 @@
 Мы прокси к кластерам VM. Каждое окружение (кластер) = vm_<env> в конфиге; у него
 опционально есть vmagent (targets) и vmalert (rules/alerts). Все роуты закрыты
 проверкой доступа require_module("victoria") — RBAC уровня приложения.
+
+Ответы VM отдаём сырыми байтами (Response, media_type=json) — без разбора и
+пересборки JSON на нашей стороне: так прокси почти не добавляет задержки к
+скорости самой VM (см. client.py).
 """
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 
 from access import require_module
 
@@ -19,6 +23,11 @@ router = APIRouter(
     tags=["victoria"],
     dependencies=[Depends(require_module("victoria"))],
 )
+
+
+def _json(raw: bytes) -> Response:
+    """Сырые байты ответа VM → HTTP-ответ как есть."""
+    return Response(content=raw, media_type="application/json")
 
 
 # --- Окружения ----------------------------------------------------------------
@@ -53,7 +62,7 @@ async def query(
 ):
     """Мгновенный запрос PromQL/MetricsQL."""
     require_env(env)
-    return await client.query(env, query, time, config.resolve_tenant(env, tenant))
+    return _json(await client.query(env, query, time, config.resolve_tenant(env, tenant)))
 
 
 @router.get("/{env}/query_range")
@@ -67,48 +76,53 @@ async def query_range(
 ):
     """Запрос за интервал — данные для графика."""
     require_env(env)
-    return await client.query_range(env, query, start, end, step, config.resolve_tenant(env, tenant))
+    return _json(await client.query_range(env, query, start, end, step, config.resolve_tenant(env, tenant)))
 
 
 @router.get("/{env}/labels")
 async def labels(env: str, tenant: Optional[str] = None):
     """Имена лейблов (автодополнение)."""
     require_env(env)
-    return await client.labels(env, config.resolve_tenant(env, tenant))
+    return _json(await client.labels(env, config.resolve_tenant(env, tenant)))
 
 
 @router.get("/{env}/label_values")
-async def label_values(env: str, label: str = Query(...), tenant: Optional[str] = None):
+async def label_values(
+    env: str,
+    label: str = Query(...),
+    tenant: Optional[str] = None,
+    limit: Optional[int] = None,
+):
     """Значения лейбла (автодополнение). label=__name__ → имена метрик."""
     require_env(env)
-    return await client.label_values(env, label, config.resolve_tenant(env, tenant))
+    return _json(await client.label_values(env, label, config.resolve_tenant(env, tenant), limit))
 
 
 @router.get("/{env}/tsdb")
-async def tsdb(env: str, topn: int = 20, tenant: Optional[str] = None):
-    """Кардинальность (топ серий) — вкладка Cardinality."""
+async def tsdb(env: str, topn: int = 20, tenant: Optional[str] = None, refresh: bool = False):
+    """Кардинальность (топ серий) — вкладка Cardinality. refresh=1 — мимо кэша."""
     require_env(env)
-    return await client.tsdb_status(env, topn, config.resolve_tenant(env, tenant))
+    return _json(await client.tsdb_status(env, topn, config.resolve_tenant(env, tenant), refresh))
 
 
 # --- vmagent ------------------------------------------------------------------
 @router.get("/{env}/targets")
-async def targets(env: str):
-    """Цели скрейпа из vmagent."""
+async def targets(env: str, refresh: bool = False):
+    """Цели скрейпа из vmagent. refresh=1 — мимо кэша."""
     require_env(env)
-    return await client.targets(env)
+    return _json(await client.targets(env, refresh))
 
 
 # --- vmalert ------------------------------------------------------------------
 @router.get("/{env}/rules")
-async def rules(env: str):
-    """Группы правил из vmalert."""
+async def rules(env: str, refresh: bool = False):
+    """Группы правил из vmalert. refresh=1 — мимо кэша."""
     require_env(env)
-    return await client.rules(env)
+    return _json(await client.rules(env, refresh))
 
 
 @router.get("/{env}/alerts")
 async def alerts(env: str):
     """Активные алерты из vmalert."""
     require_env(env)
-    return await client.alerts(env)
+    return _json(await client.alerts(env))

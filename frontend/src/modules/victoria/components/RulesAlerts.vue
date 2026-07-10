@@ -3,6 +3,7 @@
 // РАСКРЫТЬ кликом и посмотреть состав (expr, labels, annotations, health) и активные
 // алерты (rule.alerts — сработавшие серии). Только просмотр.
 import { ref, computed, onMounted } from 'vue'
+import Skeleton from '../../../shared/Skeleton.vue'
 import { fmtDt } from '../../../shared/time.js'
 import { victoriaApi } from '../api.js'
 
@@ -20,13 +21,14 @@ const STATES = [
   ['inactive', 'inactive'], ['recording', 'recording'],
 ]
 
-onMounted(load)
+onMounted(() => load())
 
-async function load() {
+// refresh=true (кнопка «обновить») — бэкенд перечитывает vmalert мимо кэша.
+async function load(refresh = false) {
   loading.value = true
   error.value = null
   try {
-    const r = await victoriaApi.rules(props.env)
+    const r = await victoriaApi.rules(props.env, refresh)
     groups.value = r.data?.groups || []
   } catch (e) {
     error.value = e.message
@@ -95,11 +97,12 @@ function toggle(k) { openKey.value = openKey.value === k ? null : k }
         <span class="firing" :class="{ zero: !stats.firing }">firing {{ stats.firing }}</span>
         <span class="pending" :class="{ zero: !stats.pending }">pending {{ stats.pending }}</span>
       </span>
-      <button class="btn btn-sm" @click="load">обновить</button>
+      <button class="btn btn-sm" :disabled="loading" @click="load(true)">{{ loading ? 'обновляю…' : 'обновить' }}</button>
     </div>
 
-    <div v-if="loading" class="empty">Загрузка…</div>
-    <div v-else-if="!filtered.length" class="empty">Правил не найдено.</div>
+    <!-- Первая загрузка — скелет-плашки; при «обновить» старый список остаётся. -->
+    <Skeleton v-if="loading && !groups.length" :lines="5" :height="56" />
+    <div v-else-if="!loading && !filtered.length" class="empty">Правил не найдено.</div>
 
     <div v-for="(g, gi) in filtered" :key="gi" class="group">
       <div class="group-head">

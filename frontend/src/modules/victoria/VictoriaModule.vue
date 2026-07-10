@@ -3,6 +3,7 @@
 // под ними под-вкладки Query / Targets / Rules / Cardinality — показываем только те,
 // что доступны у выбранного кластера (Targets — если есть vmagent, Rules — vmalert).
 import { ref, computed, watch, onMounted } from 'vue'
+import Skeleton from '../../shared/Skeleton.vue'
 import { victoriaApi } from './api.js'
 import QueryExplorer from './components/QueryExplorer.vue'
 import TargetsList from './components/TargetsList.vue'
@@ -13,6 +14,7 @@ const envs = ref([]) // [{ name, query, targets, rules, cardinality, tenants }]
 const env = ref(null) // активное окружение (объект)
 const tenant = ref(null) // выбранный тенант (для мультитенантного VM; иначе null)
 const tab = ref(localStorage.getItem('vm.tab') || 'query') // активная под-вкладка (запоминаем)
+const loading = ref(true) // грузим список окружений
 const error = ref(null)
 
 // Список под-вкладок для активного окружения (по флагам доступности компонентов).
@@ -35,6 +37,8 @@ onMounted(async () => {
     env.value = envs.value.find((e) => e.name === savedEnv) || envs.value[0] || null
   } catch (e) {
     error.value = e.message
+  } finally {
+    loading.value = false
   }
 })
 
@@ -56,9 +60,12 @@ watch(tab, (v) => localStorage.setItem('vm.tab', v))
   <div class="vm">
     <div v-if="error" class="msg msg-err">{{ error }}</div>
 
+    <!-- Пока грузится список окружений — плашка на месте вкладок. -->
+    <Skeleton v-if="loading" :lines="1" :height="36" />
+
     <!-- Вкладки окружений (кластеров) + выбор тенанта, если кластер мультитенантный.
          Подпись «Окружение» над вкладками — как в модуле silences. -->
-    <div v-if="envs.length" class="envs">
+    <div v-else-if="envs.length" class="envs">
       <span class="envs-label">Окружение</span>
       <div class="env-row">
         <button
@@ -96,12 +103,16 @@ watch(tab, (v) => localStorage.setItem('vm.tab', v))
     </div>
 
     <!-- Контент активной под-вкладки. :key — чтобы при смене окружения компонент
-         пересоздавался и перечитывал данные нового кластера. -->
+         пересоздавался и перечитывал данные нового кластера. KeepAlive держит
+         неактивные вкладки живыми: вернулся на Query — твой запрос и график на
+         месте, targets/rules не перечитываются заново при каждом переключении. -->
     <div v-if="env" class="body">
-      <QueryExplorer v-if="tab === 'query'" :key="'q-' + env.name + '-' + (tenant || '')" :env="env.name" :tenant="tenant" />
-      <TargetsList v-else-if="tab === 'targets'" :key="'t-' + env.name" :env="env.name" />
-      <RulesAlerts v-else-if="tab === 'rules'" :key="'r-' + env.name" :env="env.name" />
-      <Cardinality v-else-if="tab === 'cardinality'" :key="'c-' + env.name + '-' + (tenant || '')" :env="env.name" :tenant="tenant" />
+      <KeepAlive :max="10">
+        <QueryExplorer v-if="tab === 'query'" :key="'q-' + env.name + '-' + (tenant || '')" :env="env.name" :tenant="tenant" />
+        <TargetsList v-else-if="tab === 'targets'" :key="'t-' + env.name" :env="env.name" />
+        <RulesAlerts v-else-if="tab === 'rules'" :key="'r-' + env.name" :env="env.name" />
+        <Cardinality v-else-if="tab === 'cardinality'" :key="'c-' + env.name + '-' + (tenant || '')" :env="env.name" :tenant="tenant" />
+      </KeepAlive>
     </div>
   </div>
 </template>

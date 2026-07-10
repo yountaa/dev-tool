@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
 import logging_setup
@@ -32,6 +33,10 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="dev-tool", lifespan=lifespan)
+
+# Сжимаем большие JSON-ответы (targets, имена метрик, правила — мегабайты текста):
+# по сети уходит в ~10 раз меньше, вкладки открываются заметно быстрее.
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # Фронт на другом origin — пускаем. На проде список лучше сузить.
 app.add_middleware(

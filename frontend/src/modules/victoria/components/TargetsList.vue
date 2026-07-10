@@ -1,7 +1,10 @@
 <script setup>
 // Цели скрейпа из vmagent (/api/v1/targets) — «как в Prometheus»: сгруппированы по
-// job (scrapePool), каждая группа раскрывается/сворачивается, в шапке счётчик up/total.
+// job (scrapePool), в шапке группы счётчик up/total. По умолчанию ВСЕ группы
+// свёрнуты (целей бывают тысячи — раскрытые таблицы тормозили вкладку); группа
+// раскрывается кликом, а при поиске/фильтре down раскрываются найденные.
 import { ref, computed, onMounted } from 'vue'
+import Skeleton from '../../../shared/Skeleton.vue'
 import { victoriaApi } from '../api.js'
 
 const props = defineProps({ env: { type: String, required: true } })
@@ -9,18 +12,25 @@ const props = defineProps({ env: { type: String, required: true } })
 const targets = ref([]) // activeTargets
 const search = ref('')
 const onlyDown = ref(false)
-const collapsed = ref({}) // { [pool]: true } — свёрнутые группы (по умолчанию раскрыты)
+const expanded = ref({}) // { [pool]: true } — раскрытые группы (по умолчанию всё свёрнуто)
 const loading = ref(true)
 const error = ref(null)
 
-onMounted(load)
+onMounted(() => load())
 
-async function load() {
+// refresh=true (кнопка «Обновить») — бэкенд перечитывает vmagent мимо кэша.
+async function load(refresh = false) {
   loading.value = true
   error.value = null
   try {
-    const r = await victoriaApi.targets(props.env)
-    targets.value = r.data?.activeTargets || []
+    const r = await victoriaApi.targets(props.env, refresh)
+    const list = r.data?.activeTargets || []
+    // Строку для поиска считаем ОДИН раз при загрузке: JSON.stringify лейблов
+    // тысяч целей на каждое нажатие в поле поиска подтормаживал ввод.
+    for (const t of list) {
+      t._hay = ((t.scrapePool || '') + ' ' + (t.scrapeUrl || '') + ' ' + JSON.stringify(t.labels || {})).toLowerCase()
+    }
+    targets.value = list
   } catch (e) {
     error.value = e.message
   } finally {
@@ -53,10 +63,7 @@ const groups = computed(() => {
   const map = new Map()
   for (const t of targets.value) {
     if (onlyDown.value && t.health === 'up') continue
-    if (q) {
-      const hay = ((t.scrapePool || '') + ' ' + (t.scrapeUrl || '') + ' ' + JSON.stringify(t.labels || {})).toLowerCase()
-      if (!hay.includes(q)) continue
-    }
+    if (q && !t._hay.includes(q)) continue
     const p = t.scrapePool || '(no pool)'
     if (!map.has(p)) map.set(p, [])
     map.get(p).push(t)
@@ -69,11 +76,16 @@ const groups = computed(() => {
 const totalUp = computed(() => targets.value.filter((t) => t.health === 'up').length)
 const totalDown = computed(() => targets.value.length - totalUp.value)
 
-function toggle(pool) { collapsed.value = { ...collapsed.value, [pool]: !collapsed.value[pool] } }
-function setAll(state) {
+// Группа раскрыта, если раскрыта руками, либо активен поиск/«только down» —
+// иначе найденные строки прятались бы под свёрнутыми шапками.
+function isOpen(pool) {
+  return !!expanded.value[pool] || !!search.value.trim() || onlyDown.value
+}
+function toggle(pool) { expanded.value = { ...expanded.value, [pool]: !expanded.value[pool] } }
+function setAll(open) {
   const c = {}
-  if (state) for (const g of groups.value) c[g.pool] = true
-  collapsed.value = c
+  if (open) for (const g of groups.value) c[g.pool] = true
+  expanded.value = c
 }
 </script>
 
@@ -84,29 +96,31 @@ function setAll(state) {
     <div class="bar">
       <input class="input" v-model="search" placeholder="поиск: job / instance / label" />
       <label class="chk"><input type="checkbox" v-model="onlyDown" /> только down</label>
-      <button class="btn btn-sm" @click="setAll(false)">развернуть всё</button>
-      <button class="btn btn-sm" @click="setAll(true)">свернуть всё</button>
+      <button class="btn btn-sm" @click="setAll(true)">развернуть всё</button>
+      <button class="btn btn-sm" @click="setAll(false)">свернуть всё</button>
       <span class="counts">
         <span class="up">up {{ totalUp }}</span>
         <span class="down" :class="{ zero: !totalDown }">down {{ totalDown }}</span>
       </span>
-      <button class="btn btn-sm" @click="load">Обновить</button>
+      <button class="btn btn-sm" :disabled="loading" @click="load(true)">{{ loading ? 'Обновляю…' : 'Обновить' }}</button>
     </div>
 
-    <div v-if="loading" class="empty">Загрузка…</div>
-    <div v-else-if="!groups.length" class="empty">Целей не найдено.</div>
+    <!-- Первая загрузка — скелет-плашки вместо пустого экрана; при «Обновить»
+         старый список остаётся на месте, чтобы не мигал. -->
+    <Skeleton v-if="loading && !targets.length" :lines="4" :height="44" />
+    <div v-else-if="!loading && !groups.length" class="empty">Целей не найдено.</div>
 
     <!-- Группы-джобы -->
     <div v-for="g in groups" :key="g.pool" class="group">
       <button class="group-head" @click="toggle(g.pool)">
-        <span class="chev" :class="{ open: !collapsed[g.pool] }">
+        <span class="chev" :class="{ open: isOpen(g.pool) }">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6" /></svg>
         </span>
         <span class="group-name">{{ g.pool }}</span>
         <span class="group-count" :class="{ bad: g.up < g.total }">{{ g.up }}/{{ g.total }} up</span>
       </button>
 
-      <div v-if="!collapsed[g.pool]" class="tbl-scroll">
+      <div v-if="isOpen(g.pool)" class="tbl-scroll">
         <table class="tbl">
           <thead>
             <tr><th></th><th>Instance</th><th>Endpoint</th><th>Labels</th><th>Ошибка</th></tr>
