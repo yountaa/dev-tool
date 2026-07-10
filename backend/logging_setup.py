@@ -44,9 +44,10 @@ def setup() -> None:
     access.propagate = False
 
 
-def event(logger: logging.Logger, name: str, /, **fields) -> None:
+def event(logger: logging.Logger, name: str, /, *, level: int = logging.INFO, **fields) -> None:
     """Структурное событие: name попадает в msg, остальное — отдельными полями.
 
     logger и name — позиционные, чтобы поле name= не конфликтовало с параметром.
+    level — уровень записи (по умолчанию INFO); передай logging.WARNING и т.п.
     """
-    logger.info(name, extra={"fields": fields})
+    logger.log(level, name, extra={"fields": fields})

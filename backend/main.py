@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import logging_setup
-from access import router as access_router
+from access import log_config as log_auth_config, router as access_router
 from modules.silences import save_hub
 from modules.silences.client import AlertmanagerError
 from modules.silences.routes import router as silences_router
@@ -23,7 +23,8 @@ access_log = logging.getLogger("silences.access")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """На старте: подготовить локальную папку правил и запустить шедулер."""
+    """На старте: показать настройки авторизации, подготовить папку правил, шедулер."""
+    log_auth_config()  # действующие AUTH_/RBAC_ настройки — первым делом в лог
     save_hub.ensure_repo()
     scheduler.start()
     log.info("приложение запущено")

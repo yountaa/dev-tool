@@ -23,13 +23,25 @@ oauth2-proxy. Без прокси (локальный режим) заголов
 """
 from __future__ import annotations
 
+import logging
 import os
 
+from dotenv import load_dotenv
 from fastapi import APIRouter, HTTPException, Request
+
+import logging_setup
+
+# ВАЖНО: загрузить .env ДО чтения переменных ниже. main.py импортирует access.py
+# ПЕРВЫМ — раньше модулей silences/victoria, которые тоже зовут load_dotenv(). Без
+# этой строки AUTH_ENABLED/RBAC_* читались бы из ещё не загруженного окружения →
+# AUTH_ENABLED=false → пользователь всегда «local», а RBAC молча выключен.
+load_dotenv()
 
 # Все модули-вкладки приложения. Фронт строит рельс из своего реестра, а бэкенд
 # по этому списку решает, какие вкладки показать пользователю (см. /access/me).
 KNOWN_MODULES = ["silences", "victoria"]
+
+log = logging.getLogger("access")  # логи авторизации/RBAC
 
 
 # --- Настройки из окружения ---------------------------------------------------
@@ -107,9 +119,36 @@ def require_module(module: str):
     Вешается на роутер модуля: dependencies=[Depends(require_module("victoria"))].
     """
     def dep(request: Request) -> None:
-        if not can_access(module, current_groups(request)):
+        groups = current_groups(request)
+        if not can_access(module, groups):
+            # Отказ доступа — событие уровня WARNING (кто/куда/с какими группами).
+            logging_setup.event(
+                log, "auth.denied", level=logging.WARNING,
+                module=module, user=current_user(request), groups=groups,
+            )
             raise HTTPException(403, f"нет доступа к модулю «{module}»")
     return dep
+
+
+def log_config() -> None:
+    """Однократно на старте — вывести ДЕЙСТВУЮЩИЕ настройки авторизации/RBAC.
+
+    Сразу видно, что AUTH_ENABLED/группы прочитаны как ожидалось (если тут
+    auth_enabled=false, а ты ждал true — значит .env не подхватился/не проброшен,
+    и все запросы поедут под fallback-пользователем «local»).
+    """
+    logging_setup.event(
+        log, "auth.config",
+        auth_enabled=AUTH_ENABLED,
+        user_header=AUTH_USER_HEADER,
+        groups_header=AUTH_GROUPS_HEADER,
+        fallback_user=AUTH_FALLBACK_USER,
+        rbac_enabled=RBAC_ENABLED,
+        rbac_active=(RBAC_ENABLED and AUTH_ENABLED),  # реально режет только при обоих
+        admin_groups=RBAC_ADMIN_GROUPS,
+        access_rules=ACCESS,
+        known_modules=KNOWN_MODULES,
+    )
 
 
 # --- Роутер уровня приложения -------------------------------------------------
@@ -127,11 +166,29 @@ def me(request: Request):
     - modules — id доступных модулей из KNOWN_MODULES.
     """
     groups = current_groups(request)
+    name = current_user(request)
+    admin = is_admin(groups)
+    modules = [m for m in KNOWN_MODULES if can_access(m, groups)]
+
+    if AUTH_ENABLED and name == AUTH_FALLBACK_USER:
+        # Авторизация включена, но имя не пришло из заголовка → это и есть
+        # «постоянно local»: oauth2-proxy не проставил заголовок или nginx его не
+        # пробросил. Логируем как аномалию, чтобы причина была видна сразу.
+        logging_setup.event(
+            log, "auth.no_username_header", level=logging.WARNING,
+            expected_header=AUTH_USER_HEADER, groups_seen=len(groups),
+        )
+    else:
+        logging_setup.event(
+            log, "auth.me",
+            user=name, auth=AUTH_ENABLED, groups=groups, admin=admin, modules=modules,
+        )
+
     return {
-        "name": current_user(request),
+        "name": name,
         "auth": AUTH_ENABLED,
         "tz": APP_TZ,
         "groups": groups,
-        "admin": is_admin(groups),
-        "modules": [m for m in KNOWN_MODULES if can_access(m, groups)],
+        "admin": admin,
+        "modules": modules,
     }
