@@ -79,10 +79,11 @@
   --track: #ecdcd3;
 }
 
-/* Victoria — рабочая область шире (как дашборд Prometheus): Query-графику и
-   таблице targets нужно больше места. Специфичность html[...] перебивает scoped
-   .content из App.vue. */
-html[data-space="victoria"] .content { max-width: 1360px; }
+/* Victoria — рабочая область заметно шире (как дашборд Prometheus): Query-графику,
+   таблице с множеством лейблов и targets нужно много места; на широком мониторе
+   занимаем почти всю ширину, на узком — по вьюпорту. Специфичность html[...]
+   перебивает scoped .content из App.vue. */
+html[data-space="victoria"] .content { max-width: min(1840px, 96vw); }
 
 * { box-sizing: border-box; }
 
