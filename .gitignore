@@ -1,10 +1,22 @@
-data/
-.env
-.venv
-auth/
-data/
-docker-compose.auth.yml
-alert.rules.yml
-alertmanager.yml
-prometheus.yml
-docs/
+# Белый список: по умолчанию в git НИЧЕГО не идёт — только backend/, frontend/
+# и .env.example. Всё остальное на верхнем уровне (README, docker-compose,
+# prometheus.yml, auth/, .env.prod, data/ и пр.) в репозиторий не попадает.
+/*
+
+# ...кроме нужного:
+!/.gitignore
+!/.env.example
+!/backend/
+!/frontend/
+
+# Внутри backend/ и frontend/ — исключаем мусор сборки, кэши и секреты:
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+/backend/.env
+/backend/.hub-repo/
+/frontend/node_modules/
+/frontend/dist/
+# конфиг тестового стенда (свободные порты) — не для git
+/frontend/vite.stand.config.mjs

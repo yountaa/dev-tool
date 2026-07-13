@@ -125,7 +125,11 @@ h1, h2, h3, .tab-title, .head-title, .brand-name, .card-title {
   display: flex;
   align-items: center;
   gap: 8px;
+  margin-bottom: 12px; /* заголовок таблицы/списка чуть выше начала списка */
 }
+/* Внутри шапки карточки (заголовок + действие в одну строку) отступ не нужен —
+   его задаёт сам .card-head. */
+.card-head .card-title { margin-bottom: 0; }
 .card-hint { color: var(--text-mute); font-family: var(--mono); font-size: 12px; }
 
 /* --- Поля ввода --- */

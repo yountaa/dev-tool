@@ -425,7 +425,11 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
          старый график остаётся, но пригашен (dim), чтобы было видно ожидание. -->
     <div v-show="mode === 'graph'" class="card" :class="{ dim: loading && chartSeries.length }">
       <Skeleton v-if="loading && !chartSeries.length" :lines="1" :height="340" />
-      <div ref="chartEl" class="chart"></div>
+      <!-- Резервируем высоту графика, пока он есть или грузится: при перезапросе
+           (пресеты «1h/6h…») uPlot на миг удаляет canvas, и без min-height блок
+           схлопывался в 0 → высота страницы падала → браузер прижимал прокрутку к
+           новому максимуму и «кидал наверх». -->
+      <div ref="chartEl" class="chart" :style="(chartSeries.length || loading) ? 'min-height:380px' : null"></div>
       <div v-if="!chartSeries.length && !loading" class="empty">Нет данных — выполни запрос.</div>
 
       <!-- Легенда: найденные серии с цветом и полными лейблами -->

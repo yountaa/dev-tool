@@ -164,15 +164,25 @@ async def list_alerts(env: str):
     их сработавших серий). Только чтение.
     """
     require_env(env)
+    # Два независимых источника (AM и Prometheus/vmalert) дёргаем параллельно —
+    # вкладка открывается быстрее на один round-trip. return_exceptions, чтобы
+    # падение одного не отменяло другой; ошибки разбираем ниже.
+    am_res, rules_res = await asyncio.gather(
+        client.list_alerts(env), client.list_rule_defs(env), return_exceptions=True,
+    )
     # Живые алерты AM — best-effort: если AM недоступен, просто не будет пометок.
-    try:
-        am_alerts = await client.list_alerts(env)
-    except AlertmanagerError:
+    if isinstance(am_res, AlertmanagerError):
         am_alerts = []
-    try:
-        rules = await client.list_rule_defs(env)
-    except AlertmanagerError as e:
-        raise HTTPException(502, str(e))
+    elif isinstance(am_res, BaseException):
+        raise am_res
+    else:
+        am_alerts = am_res
+    # Источник правил — обязателен: его недоступность отдаём понятным 502.
+    if isinstance(rules_res, AlertmanagerError):
+        raise HTTPException(502, str(rules_res))
+    elif isinstance(rules_res, BaseException):
+        raise rules_res
+    rules = rules_res
 
     if rules:
         am_by_name = _am_index(am_alerts)

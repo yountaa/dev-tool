@@ -25,13 +25,24 @@ def _am_nodes(env: str) -> list[str]:
     return nodes
 
 
-# trust_env=False — чтобы httpx НЕ тащил запрос через HTTP(S)_PROXY из окружения
-# (иначе обращение к внутреннему адресу уходит в корпоративный прокси и рвётся).
+# Один клиент на процесс: пул соединений (keep-alive) вместо нового TCP/TLS на
+# каждый запрос к AM. trust_env=False — чтобы httpx НЕ тащил запрос через
+# HTTP(S)_PROXY из окружения (иначе обращение к внутреннему адресу уходит в
+# корпоративный прокси и рвётся).
+_client: httpx.AsyncClient | None = None
+
+
+def _http() -> httpx.AsyncClient:
+    global _client
+    if _client is None:
+        _client = httpx.AsyncClient(timeout=_TIMEOUT, trust_env=False)
+    return _client
+
+
 async def _request(method: str, base: str, path: str, json: dict | None = None) -> httpx.Response:
     """Один запрос к конкретной ноде; понятная ошибка, если недоступна."""
     try:
-        async with httpx.AsyncClient(timeout=_TIMEOUT, trust_env=False) as client:
-            resp = await client.request(method, f"{base}{path}", json=json)
+        resp = await _http().request(method, f"{base}{path}", json=json)
     except httpx.HTTPError as e:
         raise AlertmanagerError(f"нет связи с {base}: {e}")
     if resp.status_code >= 400:
@@ -44,8 +55,7 @@ async def _read_all(nodes: list[str], path: str, params: dict | None = None) -> 
     out, errors = [], []
     for base in nodes:
         try:
-            async with httpx.AsyncClient(timeout=_TIMEOUT, trust_env=False) as client:
-                resp = await client.get(f"{base}{path}", params=params)
+            resp = await _http().get(f"{base}{path}", params=params)
             if resp.status_code >= 400:
                 errors.append(f"{base} → {resp.status_code}")
                 continue

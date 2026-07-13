@@ -1,8 +1,10 @@
-fastapi
-uvicorn[standard]
-httpx
-python-dotenv
-apscheduler
-pydantic
+# Границы: нижняя — рабочая версия, верхняя — кап на следующий мажор. Так `pip install`
+# тянет патчи/минор (багфиксы), но не ломающий мажор (pydantic v3, fastapi 1.0 и т.п.).
+fastapi>=0.128,<1.0
+uvicorn[standard]>=0.39,<1.0
+httpx>=0.28,<1.0
+python-dotenv>=1.0,<2.0
+apscheduler>=3.11,<4.0
+pydantic>=2.13,<3.0
 tzdata
-psycopg2-binary   # драйвер Postgres (нужен только при STORAGE_BACKEND=postgres)
+psycopg2-binary>=2.9,<3.0   # драйвер Postgres (нужен только при STORAGE_BACKEND=postgres)

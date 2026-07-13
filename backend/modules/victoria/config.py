@@ -106,7 +106,7 @@ def tenant_labels(env: str) -> list[str]:
     return sorted(TENANTS.get(env, {}).keys())
 
 
-def resolve_tenant(env: str, tenant: str) -> str:
+def resolve_tenant(env: str, tenant: str | None) -> str | None:
     """Валидная подпись тенанта: сам tenant, если он есть, иначе первый по алфавиту.
     None — если у кластера тенантов нет (обычный одно-тенантный)."""
     labels = tenant_labels(env)
