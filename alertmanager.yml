@@ -1,6 +1,0 @@
-# Минимальный конфиг для локального Alertmanager (только чтобы поднялся).
-# Для теста silence-ов получатели не важны — API /api/v2/silences работает и так.
-route:
-  receiver: noop
-receivers:
-  - name: noop
