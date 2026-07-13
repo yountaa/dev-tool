@@ -46,24 +46,39 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+def _service_of(path: str) -> str:
+    """Какой внутренний модуль (сервис) обслуживает путь — для поля service в логах.
+    Берём первый сегмент пути: /victoria/... → victoria, /access/me → access и т.д.
+    Так по строке лога сразу видно, чей роут отработал."""
+    seg = path.lstrip("/").split("/", 1)[0]
+    return seg or "root"
+
+
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    """Структурный лог каждого запроса: метод, путь, статус, длительность + КТО.
+    """Логируем НЕ каждый запрос, а только проблемные (4xx/5xx).
 
-    user/auth_hdr/groups_n в каждой строке — чтобы по логу всегда было видно, кем
-    запрос был для приложения и дошли ли заголовки личности от oauth2-proxy
-    (auth_hdr=false при включённой авторизации = имя потерялось по дороге).
+    Штатные 2xx/3xx не пишем — их поток большой (вкладки часто дёргают прокси), и в
+    логе от них один шум. Полная картина остаётся и без них: настройки сервиса на
+    старте (auth.config), решения RBAC/авторизации (auth.*) и вот эти ошибки. В
+    каждой строке — service=<модуль>, чтобы сразу знать, чей роут ответил ошибкой,
+    плюс кто пришёл (user/auth_hdr/groups_n) для разбора.
+    (Атрибуция «кто что сделал» живёт в git-коммитах модулей, а не в этих логах —
+    поэтому отказ от строки на каждый запрос её не теряет.)
     """
     start = time.perf_counter()
     response = await call_next(request)
-    logging_setup.event(
-        access_log, "http.request",
-        method=request.method,
-        path=request.url.path,
-        status=response.status_code,
-        duration_ms=round((time.perf_counter() - start) * 1000, 1),
-        **request_log_fields(request),
-    )
+    if response.status_code >= 400:
+        logging_setup.event(
+            access_log, "http.error",
+            level=logging.WARNING if response.status_code < 500 else logging.ERROR,
+            service=_service_of(request.url.path),
+            method=request.method,
+            path=request.url.path,
+            status=response.status_code,
+            duration_ms=round((time.perf_counter() - start) * 1000, 1),
+            **request_log_fields(request),
+        )
     return response
 
 

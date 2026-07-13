@@ -11,6 +11,7 @@ import queue
 import re
 import subprocess
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -47,21 +48,41 @@ def _auth_url() -> str:
     return url.replace("https://", f"https://{config.GIT_USER}:{config.GIT_TOKEN}@", 1)
 
 
-def _git(*args: str, check: bool = True) -> subprocess.CompletedProcess:
-    """Запустить git в папке хранилища. check=False — вернуть результат, не падая."""
-    res = subprocess.run(
-        ["git", "-C", str(config.GIT_LOCAL_DIR), *args],
-        capture_output=True, text=True,
-    )
+def _git(*args: str, check: bool = True, retries: int = 0) -> subprocess.CompletedProcess:
+    """Запустить git в папке хранилища. check=False — вернуть результат, не падая.
+
+    retries>0 — для СЕТЕВЫХ команд (fetch/push/ls-remote/clone): повторяем при
+    ненулевом коде с нарастающей паузой. Сеть/удалёнка иногда моргают (DNS, TLS,
+    таймаут proxy) — один такой сбой не должен ронять вкладку так, что спасает
+    только перезагрузка страницы. Локальные команды зовём без retries (их незачем
+    повторять — упали, значит упали по делу)."""
+    delay = 0.5
+    for attempt in range(retries + 1):
+        res = subprocess.run(
+            ["git", "-C", str(config.GIT_LOCAL_DIR), *args],
+            capture_output=True, text=True,
+        )
+        if res.returncode == 0 or attempt == retries:
+            break
+        log.warning(
+            "git %s не удалось (попытка %d/%d), повторю через %.1fs: %s",
+            args[0], attempt + 1, retries + 1, delay, _redact(res.stderr.strip()),
+        )
+        time.sleep(delay)
+        delay *= 2
     if check and res.returncode != 0:
         # в сообщение кладём только имя подкоманды — чтобы не светить url с токеном
         raise RuntimeError(f"git {args[0]} -> {res.returncode}: {_redact(res.stderr.strip())}")
     return res
 
 
+# Сколько раз докручиваем сетевые git-команды перед тем, как признать сбой.
+_NET_RETRIES = 2
+
+
 def _remote_has_branch() -> bool:
     """Есть ли наша ветка на удалёнке (у пустой/новой репы её ещё нет)."""
-    res = _git("ls-remote", "--heads", "origin", config.GIT_BRANCH, check=False)
+    res = _git("ls-remote", "--heads", "origin", config.GIT_BRANCH, check=False, retries=_NET_RETRIES)
     return res.returncode == 0 and bool(res.stdout.strip())
 
 
@@ -98,7 +119,7 @@ def _sync_onto_remote() -> None:
     _git("add", "-A")
     if _has_staged():
         _git(*ident, "commit", "-q", "-m", "локальные изменения хранилища")
-    _git("fetch", "origin", config.GIT_BRANCH)
+    _git("fetch", "origin", config.GIT_BRANCH, retries=_NET_RETRIES)
     _git("checkout", "-B", config.GIT_BRANCH)
     if not _local_ahead():
         _git("reset", "--hard", f"origin/{config.GIT_BRANCH}")
@@ -170,11 +191,11 @@ def _has_staged() -> bool:
 
 def _push() -> None:
     """Запушить ветку. Если удалёнка ушла вперёд — слить (наши правила приоритетнее) и повторить."""
-    if _git("push", "origin", config.GIT_BRANCH, check=False).returncode == 0:
+    if _git("push", "origin", config.GIT_BRANCH, check=False, retries=_NET_RETRIES).returncode == 0:
         return
     log.info("git: push отклонён, сливаю удалёнку (наши правила приоритетнее) и повторяю")
     _sync_onto_remote()
-    _git("push", "origin", config.GIT_BRANCH)  # тут уже падаем с понятной ошибкой, если что
+    _git("push", "origin", config.GIT_BRANCH, retries=_NET_RETRIES)  # тут уже падаем с понятной ошибкой, если что
 
 
 def _git_worker() -> None:

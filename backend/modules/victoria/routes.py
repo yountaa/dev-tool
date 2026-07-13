@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, Query, Response
 
 from access import require_module
 
-from . import client, config
+from . import client, config, disk
 from .deps import require_env
 
 # Вешаем RBAC на весь роутер: нет доступа к модулю victoria → 403 на любой роут.
@@ -50,6 +50,13 @@ def environments():
             "tenants": config.tenant_labels(name),
         })
     return out
+
+
+# --- Под-вкладка «Диск»: заполненность по ВСЕМ кластерам (не привязана к env) ---
+@router.get("/disk-usage")
+async def disk_usage():
+    """Заполненность дисков по всем кластерам VM. Подпись строки = имя из env-файла."""
+    return await disk.usage()
 
 
 # --- vmselect: чтение метрик (tenant — для мультитенантного VM) ----------------

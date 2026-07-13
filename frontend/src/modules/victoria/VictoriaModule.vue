@@ -9,6 +9,7 @@ import QueryExplorer from './components/QueryExplorer.vue'
 import TargetsList from './components/TargetsList.vue'
 import RulesAlerts from './components/RulesAlerts.vue'
 import Cardinality from './components/Cardinality.vue'
+import DiskUsage from './components/DiskUsage.vue'
 
 const envs = ref([]) // [{ name, query, targets, rules, cardinality, tenants }]
 const env = ref(null) // активное окружение (объект)
@@ -19,14 +20,17 @@ const error = ref(null)
 
 // Список под-вкладок для активного окружения (по флагам доступности компонентов).
 // Названия под-вкладок — как в вебе Prometheus (Query / Targets / Rules / TSDB Status).
+// Флаг null → под-вкладка есть всегда (не зависит от компонентов кластера): «Диск»
+// сводит все кластеры в одну таблицу, поэтому показываем её при любом окружении.
 const SUBTABS = [
   ['query', 'Query', 'query'],
   ['targets', 'Targets', 'targets'],
   ['rules', 'Rules', 'rules'],
   ['cardinality', 'TSDB Status', 'cardinality'],
+  ['disk', 'Disk Usage', null],
 ]
 const subtabs = computed(() =>
-  env.value ? SUBTABS.filter(([, , flag]) => env.value[flag]) : [],
+  env.value ? SUBTABS.filter(([, , flag]) => flag === null || env.value[flag]) : [],
 )
 
 onMounted(async () => {
@@ -112,6 +116,7 @@ watch(tab, (v) => localStorage.setItem('vm.tab', v))
         <TargetsList v-else-if="tab === 'targets'" :key="'t-' + env.name" :env="env.name" />
         <RulesAlerts v-else-if="tab === 'rules'" :key="'r-' + env.name" :env="env.name" />
         <Cardinality v-else-if="tab === 'cardinality'" :key="'c-' + env.name + '-' + (tenant || '')" :env="env.name" :tenant="tenant" />
+        <DiskUsage v-else-if="tab === 'disk'" key="disk" />
       </KeepAlive>
     </div>
   </div>

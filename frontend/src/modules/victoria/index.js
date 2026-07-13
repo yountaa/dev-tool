@@ -5,7 +5,7 @@ import VictoriaModule from './VictoriaModule.vue'
 export default {
   id: 'victoria',
   title: 'Victoria Metrics',
-  subtitle: 'метрики, targets, правила',
+  subtitle: 'Query, Targets, Rules',
   // Простой график-иконка: оси + линия.
   icon: 'M3 3v18h18M7 15l4-5 3 3 5-7',
   component: VictoriaModule,

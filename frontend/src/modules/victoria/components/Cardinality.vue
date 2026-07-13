@@ -1,10 +1,6 @@
 <script setup>
-// Вкладка TSDB Status: кардинальность (/api/v1/status/tsdb) + прогноз заполнения
-// дисков по нодам vmstorage. Прогноз строим из self-метрик VM:
-//   vm_free_disk_space_bytes — свободно на ноде,
-//   vm_data_size_bytes       — занято данными,
-//   rate(vm_data_size_bytes)  — скорость роста → ETA = свободно / рост.
-// Если этих метрик нет в источнике (напр. обычный Prometheus) — прогноз скрыт.
+// Вкладка TSDB Status: кардинальность (/api/v1/status/tsdb) — топ метрик/лейблов
+// по числу серий. Заполненность дисков вынесена в отдельную под-вкладку «Диск».
 import { ref, computed, onMounted } from 'vue'
 import Skeleton from '../../../shared/Skeleton.vue'
 import { victoriaApi } from '../api.js'
@@ -15,8 +11,7 @@ const props = defineProps({
 })
 
 const data = ref(null)
-const groups = ref([])      // прогноз заполнения по группам vmstorage
-const topn = ref(20)
+const topn = ref(10)   // TSDB Status по умолчанию показывает топ-10
 const loading = ref(true)
 const error = ref(null)
 const verified = ref(false) // сверяли ли топ-метрики с хранилищем (на больших кластерах — нет)
@@ -29,7 +24,7 @@ onMounted(() => loadAll())
 
 // refresh=true (кнопка «Обновить») — /status/tsdb перечитывается мимо кэша бэкенда.
 async function loadAll(refresh = false) {
-  await Promise.all([loadTsdb(refresh), loadForecast()])
+  await loadTsdb(refresh)
 }
 
 async function loadTsdb(refresh = false) {
@@ -75,49 +70,6 @@ async function verifyMetricNames(list) {
   }
 }
 
-// Оценка «за сколько дней заполнится диск» по группам vmstorage. Считает сам VM:
-// свободное место (за вычетом резерва) делим на скорость роста данных, где рост
-// учитывает сжатие/дедуп (байт на строку) и отдельно рост индекса (new timeseries).
-// Усредняем за 10 минут, чтобы одиночный всплеск не искажал прогноз. Всё в
-// props.tenant — цифры именно этого namespace, а не суммарно по всем.
-const ETA_DAYS_EXPR = `
-avg_over_time((
-  min by(group)(
-    (vm_free_disk_space_bytes - vm_free_disk_space_limit_bytes)
-      / ignoring(path)
-    (
-      (rate(vm_rows_added_to_storage_total[1d]) - sum without(type)(rate(vm_deduplicated_samples_total[1d])))
-        * (sum without(type)(vm_data_size_bytes{type!~"indexdb.*"}) / sum without(type)(vm_rows{type!~"indexdb.*"}))
-      + rate(vm_new_timeseries_created_total[1d])
-        * (sum without(type)(vm_data_size_bytes{type="indexdb/file"}) / sum without(type)(vm_rows{type="indexdb/file"}))
-    )
-  ) / 86400
-)[10m:])`.trim()
-
-async function loadForecast() {
-  try {
-    // Три лёгких запроса по self-метрикам (низкая кардинальность): дни до заполнения
-    // по формуле выше + свободно/занято по группам для контекста.
-    const [eta, free, used] = await Promise.all([
-      victoriaApi.query(props.env, ETA_DAYS_EXPR, null, props.tenant),
-      victoriaApi.query(props.env, 'min by(group)(vm_free_disk_space_bytes - vm_free_disk_space_limit_bytes)', null, props.tenant),
-      victoriaApi.query(props.env, 'sum by(group)(vm_data_size_bytes)', null, props.tenant),
-    ])
-    const by = {}
-    const put = (resp, key) => {
-      for (const s of resp.data?.result || []) {
-        const g = (s.metric && (s.metric.group || s.metric.instance)) || '(group)'
-        if (!by[g]) by[g] = { group: g }
-        by[g][key] = parseFloat(s.value[1])
-      }
-    }
-    put(eta, 'days'); put(free, 'free'); put(used, 'used')
-    groups.value = Object.values(by).sort((a, b) => a.group.localeCompare(b.group))
-  } catch (e) {
-    groups.value = [] // нет self-метрик — просто не показываем прогноз
-  }
-}
-
 const total = computed(() => {
   const d = data.value
   if (!d) return null
@@ -152,23 +104,6 @@ const lists = computed(() => {
 })
 
 function maxOf(arr) { return arr.reduce((m, x) => Math.max(m, x.value || 0), 0) || 1 }
-
-// --- Форматтеры ---
-function fmtBytes(n) {
-  if (n == null || isNaN(n)) return '—'
-  const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB']
-  let i = 0, v = n
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++ }
-  return `${v.toFixed(v < 10 && i > 0 ? 1 : 0)} ${u[i]}`
-}
-// На вход — дни до заполнения (из ETA_DAYS_EXPR). Отрицательные/нулевые/пустые
-// значит роста нет → «стабильно».
-function fmtEta(days) {
-  if (days == null || isNaN(days) || days <= 0) return { text: 'стабильно', cls: 'ok' }
-  if (days > 730) return { text: '> 2 лет', cls: 'ok' }
-  if (days > 60) return { text: `~${Math.round(days / 30)} мес`, cls: days < 90 ? 'warn' : 'ok' }
-  return { text: `~${Math.round(days)} дн`, cls: days < 14 ? 'bad' : 'warn' }
-}
 </script>
 
 <template>
@@ -185,26 +120,6 @@ function fmtEta(days) {
       </label>
       <span v-if="total !== null" class="total">Всего серий: <b>{{ total.toLocaleString() }}</b></span>
       <button class="btn btn-sm" :disabled="loading" @click="loadAll(true)">{{ loading ? 'Обновляю…' : 'Обновить' }}</button>
-    </div>
-
-    <!-- Прогноз заполнения дисков по группам vmstorage -->
-    <div v-if="groups.length" class="card">
-      <div class="card-title">Заполнение дисков по группам vmstorage</div>
-      <div class="tbl-scroll">
-        <table class="nodes">
-          <thead>
-            <tr><th class="l">Группа</th><th class="r">Свободно</th><th class="r">Занято</th><th class="r">Заполнится</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="n in groups" :key="n.group">
-              <td class="l mono">{{ n.group }}</td>
-              <td class="r mono">{{ fmtBytes(n.free) }}</td>
-              <td class="r mono">{{ fmtBytes(n.used) }}</td>
-              <td class="r mono eta" :class="fmtEta(n.days).cls">{{ fmtEta(n.days).text }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
     </div>
 
     <!-- Загрузка — скелет-плашки на месте будущих карточек. -->
@@ -236,23 +151,6 @@ function fmtEta(days) {
 .topn { width: auto; }
 .total { font-size: 13px; color: var(--text-dim); margin-left: auto; }
 .total b { font-family: var(--mono); color: var(--text); }
-
-/* Таблица нод — числа выровнены по правому краю, единым столбцом.
-   На узком окне скроллится внутри себя, а не распирает страницу вбок. */
-.tbl-scroll { overflow-x: auto; }
-/* table-layout: fixed — ширина числовых колонок НЕ зависит от содержимого
-   (иначе «1.0 TiB» и «953 GiB» давали разную ширину, и колонки «прыгали» от
-   строки к строке и от кластера к кластеру). Числовые колонки одинаковой ширины
-   везде; имя группы забирает остаток и обрезается многоточием. */
-.nodes { width: 100%; border-collapse: collapse; font-size: 13px; table-layout: fixed; }
-.nodes th { color: var(--text-mute); font-weight: 600; padding: 6px 10px; border-bottom: 1px solid var(--border-soft); }
-.nodes td { padding: 7px 10px; border-bottom: 1px solid var(--border-soft); }
-.nodes .l { text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.nodes .r { text-align: right; white-space: nowrap; width: 120px; }
-.mono { font-family: var(--mono); }
-.eta.ok { color: #50fa7b; }
-.eta.warn { color: #ffb86c; }
-.eta.bad { color: var(--danger); }
 
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }

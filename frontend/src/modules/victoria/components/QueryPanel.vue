@@ -4,6 +4,8 @@
 // панель). Без него каждая новая панель и каждое переключение вкладки заново
 // тянули бы список из тысяч имён.
 const namesCache = new Map() // 'env|tenant' -> { at, names }
+const labelNamesCache = new Map()  // 'env|tenant' -> { at, names } — имена лейблов
+const labelValuesCache = new Map() // 'env|tenant|label' -> { at, values } — значения лейбла
 const NAMES_TTL = 5 * 60 * 1000
 </script>
 
@@ -13,7 +15,7 @@ const NAMES_TTL = 5 * 60 * 1000
 // (instant → таблица). Несколько таких панелей складываются в QueryExplorer
 // (кнопка «добавить запрос» снизу — как «Add Panel» в Prometheus).
 // Бэкенд — тонкий прокси, отдаёт Prometheus-JSON.
-import { ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 import Skeleton from '../../../shared/Skeleton.vue'
@@ -33,7 +35,7 @@ const MAX_SERIES = 20        // линий на графике (range)
 const MAX_METRICS = 10000    // имён метрик в автокомплите
 
 const expr = ref('')
-const mode = ref('graph') // 'graph' (range) | 'table' (instant)
+const mode = ref('graph') // 'graph' (range) | 'table' (instant) | 'json' (instant, сырой JSON)
 
 // --- Диапазон времени --------------------------------------------------------
 // Graph: явные «От»/«До» (datetime-local). Table: «Время расчёта» (instant),
@@ -58,11 +60,27 @@ const error = ref(null)
 const meta = ref('') // строка-сводка под запросом (серий, время расчёта)
 const truncated = ref('') // предупреждение об обрезке результата
 
-const instant = ref([]) // [{ labels, value }] для режима Table (уже обрезано до MAX_TABLE_ROWS)
+const instant = ref([]) // [{ metric, value }] для режима Table (уже обрезано до MAX_TABLE_ROWS)
+const rawJson = ref('')  // сырой JSON ответа VM для режима JSON (как вкладка JSON в vmui)
+
+// Колонки таблицы = объединение имён лейблов по всем сериям (как таблица в vmui:
+// каждый лейбл — отдельный столбец). __name__ показываем отдельной первой колонкой.
+const hasMetricName = computed(() => instant.value.some((r) => r.metric && r.metric.__name__))
+const columns = computed(() => {
+  const keys = new Set()
+  for (const row of instant.value) {
+    for (const k of Object.keys(row.metric || {})) {
+      if (k !== '__name__') keys.add(k)
+    }
+  }
+  return [...keys].sort()
+})
 
 // --- Автодополнение ----------------------------------------------------------
 const ta = ref(null) // ссылка на textarea
 const metricNames = ref([]) // имена метрик (__name__)
+const labelNames = ref([])  // имена лейблов (подсказки внутри {})
+const labelValues = ref([]) // значения активного лейбла (подсказки после label=")
 const suggestions = ref([]) // видимый список подсказок
 const sugIndex = ref(0)
 const showSug = ref(false)
@@ -79,7 +97,7 @@ const FUNCS = [
   'resets(', 'time(', 'timestamp(', 'vector(', 'scalar(', 'sort(', 'sort_desc(',
 ]
 
-const PRESETS = [['15m', 900], ['1h', 3600], ['6h', 21600], ['24h', 86400], ['7d', 604800]]
+const PRESETS = [['5m', 300], ['15m', 900], ['1h', 3600], ['6h', 21600], ['24h', 86400], ['7d', 604800]]
 // Пресет просто выставляет «От»/«До» относительно текущего момента.
 function setPreset(sec) {
   toStr.value = toLocalInput(nowSec())
@@ -99,6 +117,7 @@ const chartEl = ref(null)
 const chartSeries = ref([]) // [{ label, color, show }] — легенда под графиком
 let chart = null
 let ro = null
+let inflight = null // AbortController текущего запроса (для кнопки «Отмена»)
 
 let metricsTried = false
 async function loadMetrics() {
@@ -115,12 +134,69 @@ async function loadMetrics() {
     metricNames.value = [] // подсказок не будет, но поле работает
   }
 }
-onMounted(loadMetrics)
+// Имена лейблов (для подсказок внутри {}) — грузим лениво, кэш общий на env.
+async function loadLabelNames() {
+  const key = props.env + '|' + (props.tenant || '')
+  const hit = labelNamesCache.get(key)
+  if (hit && Date.now() - hit.at < NAMES_TTL) { labelNames.value = hit.names; return }
+  try {
+    const r = await victoriaApi.labels(props.env, props.tenant)
+    labelNames.value = Array.isArray(r.data) ? r.data : []
+    labelNamesCache.set(key, { at: Date.now(), names: labelNames.value })
+  } catch (e) {
+    labelNames.value = []
+  }
+}
 
-// Смена Graph/Table — перезапускаем запрос, если он уже введён (как в Prometheus).
-watch(mode, () => { if (expr.value.trim() && !loading.value) run() })
+// Значения конкретного лейбла (для подсказок после label="…). Кэш на (env, label).
+async function loadLabelValues(label) {
+  const key = props.env + '|' + (props.tenant || '') + '|' + label
+  const hit = labelValuesCache.get(key)
+  if (hit && Date.now() - hit.at < NAMES_TTL) { labelValues.value = hit.values; return }
+  try {
+    const r = await victoriaApi.labelValues(props.env, label, props.tenant, 2000)
+    const vals = Array.isArray(r.data) ? r.data : []
+    labelValuesCache.set(key, { at: Date.now(), values: vals })
+    labelValues.value = vals
+  } catch (e) {
+    labelValues.value = []
+  }
+}
+
+onMounted(() => { loadMetrics(); autosize() })
+
+// Поле запроса растёт под содержимое: сбрасываем высоту и подгоняем под scrollHeight
+// (с потолком — дальше внутренняя прокрутка, чтобы огромный запрос не занял экран).
+const EXPR_MAX_H = 320
+function autosize() {
+  const el = ta.value
+  if (!el) return
+  // Схлопываем до 0 перед замером: так scrollHeight = реальная высота содержимого
+  // (сброс в 'auto' на первом кадре иногда возвращал завышенное значение → поле
+  // растягивалось на пустом запросе). CSS min-height держит нижнюю границу.
+  el.style.height = '0px'
+  const full = el.scrollHeight
+  el.style.height = Math.min(full, EXPR_MAX_H) + 'px'
+  // Полоса прокрутки — только когда упёрлись в потолок. Иначе (в т.ч. пустое поле)
+  // прячем: при height=scrollHeight скролл не нужен, но браузер иногда рисовал его.
+  el.style.overflowY = full > EXPR_MAX_H ? 'auto' : 'hidden'
+}
+// Ловим и ручной ввод, и программную вставку (автодополнение pick()).
+watch(expr, () => nextTick(autosize))
+
+function onInput() { refreshSug(); autosize() }
+
+// Смена режима — перезапускаем запрос (как в Prometheus). При уходе С ГРАФИКА в
+// Table/JSON переносим конец выбранного диапазона (До) во «Время расчёта», чтобы
+// instant показал метрики за то же время, что было на графике (в т.ч. после того,
+// как диапазон выбрали мышью прямо по графику).
+watch(mode, (now, prev) => {
+  if ((now === 'table' || now === 'json') && prev === 'graph') evalStr.value = toStr.value
+  if (expr.value.trim() && !loading.value) run()
+})
 
 onBeforeUnmount(() => {
+  if (inflight) inflight.abort()
   if (ro) ro.disconnect()
   if (chart) chart.destroy()
 })
@@ -135,26 +211,84 @@ function currentToken() {
   return { token: text.slice(start, pos), start, end: pos }
 }
 
-function refreshSug() {
-  if (!metricsTried) loadMetrics() // подстраховка, если onMounted не успел/не сработал
-  const { token } = currentToken()
-  if (token.length < 1) { showSug.value = false; suggestions.value = []; return }
-  const q = token.toLowerCase()
+// Диапазон текста, который заменит выбранная подсказка (для pick). Для значений
+// лейбла он шире, чем «слово» currentToken() — значение может содержать . : / - .
+const sugRange = ref({ start: 0, end: 0 })
+
+// Что уместно подсказывать в позиции курсора: имя метрики/функция, имя лейбла
+// (внутри {}) или значение лейбла (после label="). Разбираем по тексту ДО курсора.
+// Внутри {} смотрим ТЕКУЩУЮ клаузу — от последней запятой (или самой {) до курсора,
+// чтобы после завершённого матчера (job="node") не сыпать невпопад именами лейблов.
+function suggestContext() {
+  const el = ta.value
+  const pos = el ? el.selectionStart : expr.value.length
+  const text = expr.value.slice(0, pos)
+  const open = text.lastIndexOf('{')
+  const close = text.lastIndexOf('}')
+  if (open <= close) return { kind: 'metric' }         // не внутри {}
+  const seg = text.slice(open + 1)                      // содержимое {} до курсора
+  const clause = seg.slice(seg.lastIndexOf(',') + 1)    // текущая пара label=value
+  // значение лейбла: label(=|!=|=~|!~)"…  (без закрывающей кавычки)
+  const mv = clause.match(/([A-Za-z_]\w*)\s*(=~|!~|!=|=)\s*"([^"]*)$/)
+  if (mv) return { kind: 'value', label: mv[1], typed: mv[3], start: pos - mv[3].length, end: pos }
+  // имя лейбла: клауза — это только (частичный) идентификатор, оператора ещё нет
+  const ml = clause.match(/^\s*([A-Za-z_]\w*)?$/)
+  if (ml) { const typed = ml[1] || ''; return { kind: 'label', typed, start: pos - typed.length, end: pos } }
+  // завершённый матчер / закрытая кавычка / мусор — не подсказываем ничего
+  return { kind: 'none' }
+}
+
+// Отфильтровать пул по введённому токену (startsWith в приоритете, затем includes)
+// и показать. Пустой токен — показываем весь пул (актуально для лейблов/значений).
+// Уже вписанное целиком не предлагаем (item === token) — как в подсказках silences:
+// подсказка помогает, пока «попадаешь», а на точное совпадение не мозолит глаза.
+// Нет подходящих — прячем список совсем (без плашки «нет совпадений»).
+function filterSug(pool, token, range) {
+  const q = (token || '').toLowerCase()
   const starts = []
   const incl = []
-  for (const item of [...FUNCS, ...metricNames.value]) {
-    const l = item.toLowerCase()
-    if (l.startsWith(q)) starts.push(item)
+  for (const item of pool) {
+    if (item === token) continue           // ровно то, что уже набрано — лишнее
+    const l = String(item).toLowerCase()
+    if (!q) { starts.push(item) }
+    else if (l.startsWith(q)) starts.push(item)
     else if (l.includes(q)) incl.push(item)
-    if (starts.length >= 80) break
+    if (starts.length >= 200) break
   }
   suggestions.value = [...starts, ...incl].slice(0, 80)
   sugIndex.value = 0
-  showSug.value = true // показываем всегда при непустом токене — даже «нет совпадений»
+  sugRange.value = range
+  showSug.value = suggestions.value.length > 0
+}
+
+async function refreshSug() {
+  if (!metricsTried) loadMetrics() // подстраховка, если onMounted не успел/не сработал
+  const ctx = suggestContext()
+
+  if (ctx.kind === 'none') { showSug.value = false; suggestions.value = []; return }
+
+  if (ctx.kind === 'value') {
+    await loadLabelValues(ctx.label)              // из кэша — мгновенно
+    const now = suggestContext()                  // контекст мог измениться за await
+    if (now.kind !== 'value' || now.label !== ctx.label) return
+    filterSug(labelValues.value, now.typed, { start: now.start, end: now.end })
+    return
+  }
+  if (ctx.kind === 'label') {
+    await loadLabelNames()                        // из кэша — мгновенно
+    const now = suggestContext()
+    if (now.kind !== 'label') return              // контекст мог измениться за await
+    filterSug(labelNames.value, now.typed, { start: now.start, end: now.end })
+    return
+  }
+  // имя метрики / функция — как раньше, но не сыплем всем списком на пустой токен
+  const { token, start, end } = currentToken()
+  if (token.length < 1) { showSug.value = false; suggestions.value = []; return }
+  filterSug([...FUNCS, ...metricNames.value], token, { start, end })
 }
 
 function pick(item) {
-  const { start, end } = currentToken()
+  const { start, end } = sugRange.value
   const before = expr.value.slice(0, start)
   const after = expr.value.slice(end)
   expr.value = before + item + after
@@ -165,7 +299,55 @@ function pick(item) {
   })
 }
 
+function setCaret(pos) {
+  const el = ta.value
+  if (!el) return
+  el.focus()
+  el.setSelectionRange(pos, pos)
+}
+
+// Авто-пары скобок/кавычек в поле запроса (как в редакторах кода):
+//   {  → {}   и   "  → ""   (курсор встаёт МЕЖДУ ними);
+//   печать «поверх»: набрал закрывающий, а он уже стоит справа — просто шагаем через
+//   него (второй раз не подставляется);
+//   Backspace между пустой парой удаляет обе половинки (стёр — снова пишешь сам).
+// Возвращает true, если событие обработано (дальше в onKeydown не идём).
+function autoPair(e) {
+  const el = ta.value
+  if (!el) return false
+  const s = el.selectionStart, en = el.selectionEnd
+  const text = expr.value
+  const next = text[en] || ''
+
+  // печать поверх закрывающего — не плодим второй символ
+  if ((e.key === '}' && next === '}') || (e.key === '"' && next === '"')) {
+    e.preventDefault()
+    setCaret(en + 1)
+    return true
+  }
+  // авто-пара на открытие (только когда нет выделения)
+  const close = e.key === '{' ? '}' : e.key === '"' ? '"' : null
+  if (close && s === en) {
+    e.preventDefault()
+    expr.value = text.slice(0, s) + e.key + close + text.slice(en)
+    nextTick(() => { setCaret(s + 1); refreshSug(); autosize() })
+    return true
+  }
+  // Backspace между пустой парой {}/"" — сносим обе
+  if (e.key === 'Backspace' && s === en && s > 0) {
+    const prev = text[s - 1]
+    if ((prev === '{' && next === '}') || (prev === '"' && next === '"')) {
+      e.preventDefault()
+      expr.value = text.slice(0, s - 1) + text.slice(en + 1)
+      nextTick(() => { setCaret(s - 1); refreshSug(); autosize() })
+      return true
+    }
+  }
+  return false
+}
+
 function onKeydown(e) {
+  if (autoPair(e)) return
   if (showSug.value && suggestions.value.length) {
     if (e.key === 'ArrowDown') { e.preventDefault(); sugIndex.value = (sugIndex.value + 1) % suggestions.value.length; return }
     if (e.key === 'ArrowUp') { e.preventDefault(); sugIndex.value = (sugIndex.value - 1 + suggestions.value.length) % suggestions.value.length; return }
@@ -186,45 +368,55 @@ function labelsStr(m) {
 async function run() {
   if (!expr.value.trim()) return
   showSug.value = false
+  if (inflight) inflight.abort()        // отменяем предыдущий, если ещё летит
+  const controller = new AbortController()
+  inflight = controller
   loading.value = true
   error.value = null
   meta.value = ''
   truncated.value = ''
   const t0 = performance.now()
   try {
-    const n = mode.value === 'table' ? await runInstant() : await runRange()
+    // Graph — range-запрос; Table и JSON — instant (мгновенное значение).
+    const n = mode.value === 'graph' ? await runRange(controller.signal) : await runInstant(controller.signal)
     meta.value = `${n} серий · ${Math.round(performance.now() - t0)} мс`
   } catch (e) {
-    error.value = e.message
+    if (e.name !== 'AbortError') error.value = e.message  // отмену пользователем ошибкой не считаем
   } finally {
-    loading.value = false
+    // сбрасываем состояние только если это всё ещё НАШ запрос (новый мог стартовать)
+    if (inflight === controller) { loading.value = false; inflight = null }
   }
 }
 
-async function runInstant() {
+// Отмена долгого запроса — рвём fetch через AbortController.
+function cancel() { if (inflight) inflight.abort() }
+
+async function runInstant(signal) {
   destroyChart()
-  const r = await victoriaApi.query(props.env, expr.value, fromLocalInput(evalStr.value), props.tenant)
+  const r = await victoriaApi.query(props.env, expr.value, fromLocalInput(evalStr.value), props.tenant, signal)
+  rawJson.value = JSON.stringify(r.data ?? r, null, 2)   // для режима JSON
   const rt = r.data?.resultType
   let rows
   if (rt === 'scalar' || rt === 'string') {
-    rows = [{ labels: rt, value: r.data.result?.[1] ?? '' }]
+    // скаляр/строка — одна «серия» без лейблов, значение во второй позиции.
+    rows = [{ metric: { __name__: rt }, value: r.data.result?.[1] ?? '' }]
   } else {
-    rows = (r.data?.result || []).map((s) => ({ labels: labelsStr(s.metric), value: s.value ? s.value[1] : '' }))
+    rows = (r.data?.result || []).map((s) => ({ metric: s.metric || {}, value: s.value ? s.value[1] : '' }))
   }
   instant.value = rows.slice(0, MAX_TABLE_ROWS)
   if (rows.length > MAX_TABLE_ROWS) truncated.value = `показаны первые ${MAX_TABLE_ROWS} из ${rows.length} серий`
   return rows.length
 }
 
-async function runRange() {
+async function runRange(signal) {
   instant.value = []
   const end = fromLocalInput(toStr.value) ?? nowSec()
   const start = fromLocalInput(fromStr.value) ?? (end - 3600)
   if (start >= end) throw new Error('«От» должно быть раньше «До»')
   const step = Math.max(1, Math.floor((end - start) / 400))
-  const r = await victoriaApi.queryRange(props.env, expr.value, start, end, step, props.tenant)
+  const r = await victoriaApi.queryRange(props.env, expr.value, start, end, step, props.tenant, signal)
   const res = r.data?.result || []
-  await drawChart(res.slice(0, MAX_SERIES), start, end, step)
+  await drawChart(res.slice(0, MAX_SERIES))
   if (res.length > MAX_SERIES) truncated.value = `на графике первые ${MAX_SERIES} из ${res.length} серий`
   return res.length
 }
@@ -270,15 +462,44 @@ function tooltipPlugin() {
         tip.style.left = Math.max(0, lft) + 'px'
         tip.style.top = Math.max(0, top - 10) + 'px'
       },
+      // Выделение мышью по графику (drag) = выбор диапазона: подставляем его в
+      // «От»/«До» вверху и перезапрашиваем — так шаг пересчитывается под новое окно,
+      // а поля времени показывают ровно то, что выделили. Микродвижение = не зум.
+      setSelect(u) {
+        const sel = u.select
+        if (!sel || sel.width < 6) return
+        const min = u.posToVal(sel.left, 'x')
+        const max = u.posToVal(sel.left + sel.width, 'x')
+        if (!(max > min)) return
+        fromStr.value = toLocalInput(Math.floor(min))
+        toStr.value = toLocalInput(Math.ceil(max))
+        u.setSelect({ left: 0, top: 0, width: 0, height: 0 }, false) // снять выделение без события
+        if (!loading.value) run()
+      },
     },
   }
 }
 
-async function drawChart(series, start, end, step) {
+// Последнее непустое значение серии (для легенды) — как в vmui/Grafana.
+function lastValue(s) {
+  const vals = s.values || []
+  for (let i = vals.length - 1; i >= 0; i--) {
+    if (!isNaN(parseFloat(vals[i][1]))) return vals[i][1]
+  }
+  return ''
+}
+
+async function drawChart(series) {
   destroyChart()
   if (!series.length) return
-  const timeline = []
-  for (let t = start; t <= end; t += step) timeline.push(t)
+  // Ось X строим из РЕАЛЬНЫХ меток времени, которые вернул VM (объединение по всем
+  // сериям), а не из start+k·step: VM выравнивает точки range-ответа по своей сетке
+  // шага (кратной step), и при широком окне они не совпадали с нашим start+k·step —
+  // выборка по map.has(t) давала сплошь null, и график «пропадал».
+  const tsSet = new Set()
+  for (const s of series) for (const p of (s.values || [])) tsSet.add(p[0])
+  const timeline = [...tsSet].sort((a, b) => a - b)
+  if (!timeline.length) return
 
   const data = [timeline]
   const uSeries = [{}]
@@ -293,10 +514,11 @@ async function drawChart(series, start, end, step) {
       spanGaps: true,
     })
   })
-  // Легенда под графиком: цвет + полное имя серии, с управлением видимостью.
+  // Легенда под графиком: цвет + полное имя серии + последнее значение, с управлением видимостью.
   chartSeries.value = series.map((s, i) => ({
     label: labelsStr(s.metric) || `series ${i + 1}`,
     color: COLORS[i % COLORS.length],
+    value: lastValue(s),
     show: true,
   }))
 
@@ -337,6 +559,9 @@ function setShow(i, show) {
   if (chart) chart.setSeries(i + 1, { show }) // +1: series[0] у uPlot — ось времени
 }
 function legendClick(i, e) {
+  // Тянул мышью, чтобы выделить имя серии для копирования — это не клик-переключение.
+  const sel = window.getSelection()
+  if (sel && sel.toString().length > 0) return
   if (e.metaKey || e.ctrlKey) {
     setShow(i, !chartSeries.value[i].show)
     return
@@ -366,7 +591,7 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
           rows="1"
           spellcheck="false"
           placeholder="выражение (Shift+Enter — перенос строки)"
-          @input="refreshSug"
+          @input="onInput"
           @focus="refreshSug"
           @click="refreshSug"
           @keydown="onKeydown"
@@ -379,7 +604,6 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
             :class="{ active: i === sugIndex }"
             @mousedown.prevent="pick(s)"
           >{{ s }}</li>
-          <li v-if="!suggestions.length" class="sug-empty">нет совпадений</li>
         </ul>
       </div>
 
@@ -392,6 +616,10 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
         <button class="qmode" :class="{ on: mode === 'graph' }" @click="mode = 'graph'">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5M4 19h16M8 15l3-4 3 2 4-6" /></svg>
           Graph
+        </button>
+        <button class="qmode" :class="{ on: mode === 'json' }" @click="mode = 'json'">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4H6a2 2 0 0 0-2 2v4l-2 2 2 2v4a2 2 0 0 0 2 2h2M16 4h2a2 2 0 0 1 2 2v4l2 2-2 2v4a2 2 0 0 1-2 2h-2" /></svg>
+          JSON
         </button>
       </div>
 
@@ -413,7 +641,8 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
           <button class="btn btn-sm" v-if="evalStr" @click="evalStr = ''">сейчас</button>
         </template>
 
-        <button class="btn btn-primary" :disabled="loading" @click="run">{{ loading ? '…' : 'Execute' }}</button>
+        <button v-if="loading" class="btn btn-cancel" @click="cancel">Отменить</button>
+        <button v-else class="btn btn-primary" @click="run">Execute</button>
         <span v-if="meta" class="meta">{{ meta }}</span>
       </div>
     </div>
@@ -443,20 +672,28 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
         >
           <span class="leg-dot" :style="{ background: s.color }"></span>
           <span class="leg-lab">{{ s.label }}</span>
+          <span class="leg-val">{{ s.value }}</span>
         </button>
       </div>
     </div>
 
-    <!-- Table: первая загрузка — скелет-строки; при повторном запросе старая
-         таблица остаётся, но пригашена. -->
+    <!-- Table: столбец на каждый лейбл (как таблица в vmui). Первая загрузка —
+         скелет-строки; при повторном запросе старая таблица остаётся, но пригашена. -->
     <div v-if="mode === 'table' && loading && !instant.length" class="card"><Skeleton :lines="6" :height="24" /></div>
     <div v-else-if="mode === 'table' && instant.length" class="card" :class="{ dim: loading }">
       <div class="tbl-scroll">
         <table class="tbl">
-          <thead><tr><th>Element</th><th class="val">Value</th></tr></thead>
+          <thead>
+            <tr>
+              <th v-if="hasMetricName" class="lbl">__name__</th>
+              <th v-for="c in columns" :key="c" class="lbl">{{ c }}</th>
+              <th class="val">value</th>
+            </tr>
+          </thead>
           <tbody>
             <tr v-for="(row, i) in instant" :key="i">
-              <td class="ser">{{ row.labels }}</td>
+              <td v-if="hasMetricName" class="ser">{{ row.metric.__name__ || '' }}</td>
+              <td v-for="c in columns" :key="c" class="ser">{{ row.metric[c] ?? '' }}</td>
               <td class="val">{{ row.value }}</td>
             </tr>
           </tbody>
@@ -464,6 +701,13 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
       </div>
     </div>
     <div v-else-if="mode === 'table' && !loading" class="empty">Нет данных — выполни запрос.</div>
+
+    <!-- JSON: сырой ответ VM, как вкладка JSON в vmui. -->
+    <div v-if="mode === 'json' && loading && !rawJson" class="card"><Skeleton :lines="6" :height="24" /></div>
+    <div v-else-if="mode === 'json' && rawJson" class="card" :class="{ dim: loading }">
+      <pre class="json">{{ rawJson }}</pre>
+    </div>
+    <div v-else-if="mode === 'json' && !loading" class="empty">Нет данных — выполни запрос.</div>
   </div>
 </template>
 
@@ -485,7 +729,11 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
 }
 .expr {
   font-family: var(--mono); font-size: 14px; line-height: 1.5;
-  min-height: 42px; padding: 10px 12px 10px 34px; resize: vertical;
+  min-height: 42px; padding: 10px 12px 10px 34px;
+  /* высоту ведёт autosize() под содержимое; ручной ресайз отключаем, чтобы не
+     конфликтовал. overflow-y переключает autosize(): hidden по умолчанию (нет
+     лишнего ползунка на пустом/коротком поле), auto — только на потолке EXPR_MAX_H. */
+  resize: none; overflow-y: hidden;
 }
 
 /* Выпадашка подсказок под полем */
@@ -502,8 +750,6 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .sug li.active, .sug li:hover { background: var(--accent-soft); color: var(--accent-bright); }
-.sug-empty { color: var(--text-mute); cursor: default; }
-.sug-empty:hover { background: transparent; color: var(--text-mute); }
 
 .trunc { font-size: 12px; color: #ffb86c; margin: 8px 2px 0; font-family: var(--mono); }
 
@@ -537,6 +783,9 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
 .step:first-child { border-radius: 7px 0 0 7px; border-right: none; }
 .step:last-child { border-radius: 0 7px 7px 0; border-left: none; }
 .step:hover { color: var(--accent-bright); }
+/* Кнопка отмены запроса — на месте Execute, пока идёт загрузка. */
+.btn-cancel { background: transparent; border: 1px solid var(--danger); color: var(--danger); }
+.btn-cancel:hover { background: var(--danger); color: var(--bg); }
 .meta { font-family: var(--mono); font-size: 12px; color: var(--text-mute); margin-left: auto; }
 
 .chart { width: 100%; min-height: 0; }
@@ -550,15 +799,31 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
 .leg:hover { background: var(--panel-2); }
 .leg.off { opacity: 0.4; }
 .leg-dot { flex: none; width: 11px; height: 11px; border-radius: 3px; }
-.leg-lab { font-family: var(--mono); font-size: 12px; color: var(--text-dim); word-break: break-all; }
+/* Имя и значение серии в легенде можно выделить и скопировать (легенда — <button>,
+   а у кнопок текст по умолчанию не выделяется; клик-переключение серии при этом
+   не срабатывает, если что-то выделено — см. legendClick). */
+.leg-lab { font-family: var(--mono); font-size: 12px; color: var(--text-dim); word-break: break-all; user-select: text; cursor: text; }
 .leg.off .leg-lab { text-decoration: line-through; }
+/* Значение серии — прижато вправо, как колонка Value в таблице. */
+.leg-val { margin-left: auto; padding-left: 14px; font-family: var(--mono); font-size: 12px; color: var(--text); white-space: nowrap; user-select: text; cursor: text; }
 
 .tbl-scroll { overflow-x: auto; }
 .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
-.tbl th { text-align: left; color: var(--text-mute); font-weight: 600; padding: 7px 8px; border-bottom: 1px solid var(--border-soft); }
-.tbl td { padding: 7px 8px; border-bottom: 1px solid var(--border-soft); }
+.tbl th { text-align: left; color: var(--text-mute); font-weight: 600; padding: 7px 8px; border-bottom: 1px solid var(--border-soft); white-space: nowrap; }
+.tbl td { padding: 7px 8px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+/* Заголовок-лейбл моноширинным — так столбцы читаются как имена лейблов в vmui. */
+.tbl th.lbl { font-family: var(--mono); font-weight: 600; color: var(--accent-bright); }
 .tbl .ser { font-family: var(--mono); color: var(--text-dim); word-break: break-all; }
 .tbl .val { font-family: var(--mono); text-align: right; white-space: nowrap; }
+/* Значения таблицы можно выделять и копировать (метрику, лейблы). */
+.tbl td { user-select: text; }
+
+/* JSON-режим — сырой ответ VM с горизонтальной прокруткой; текст выделяем/копируем. */
+.json {
+  margin: 0; padding: 4px 2px; max-height: 520px; overflow: auto;
+  font-family: var(--mono); font-size: 12px; line-height: 1.5; color: var(--text-dim);
+  white-space: pre; word-break: normal; user-select: text;
+}
 .empty { color: var(--text-mute); font-size: 13px; padding: 16px 2px; }
 </style>
 
@@ -576,4 +841,12 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
 .qe-tip-dot { flex: none; width: 9px; height: 9px; border-radius: 2px; margin-top: 3px; }
 .qe-tip-v { margin-top: 5px; font-weight: 700; }
 .qe-tip-t { margin-top: 2px; color: var(--text-mute); font-size: 11px; }
+
+/* Выделение диапазона мышью по графику — заметнее, чем бледная заливка uPlot по
+   умолчанию: тёмная полупрозрачная подложка + акцентные границы по краям окна. */
+.u-select {
+  background: rgba(0, 0, 0, 0.38);
+  border-left: 2px solid var(--accent);
+  border-right: 2px solid var(--accent);
+}
 </style>

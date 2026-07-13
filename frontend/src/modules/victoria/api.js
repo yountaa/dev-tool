@@ -15,11 +15,15 @@ export const victoriaApi = {
   // кластеры-окружения = вкладки; у каждого флаги доступных под-вкладок
   environments: () => http.get('/victoria/environments'),
 
-  // vmselect: чтение метрик (tenant — опц., для мультитенантного VM)
-  query: (env, expr, time, tenant) =>
-    http.get(`/victoria/${env}/query?${qs({ query: expr, time, tenant })}`),
-  queryRange: (env, expr, start, end, step, tenant) =>
-    http.get(`/victoria/${env}/query_range?${qs({ query: expr, start, end, step, tenant })}`),
+  // под-вкладка «Диск»: заполненность по ВСЕМ кластерам сразу (не привязана к env)
+  // [{ env, used, free, total, percent } | { env, error }]
+  diskUsage: () => http.get('/victoria/disk-usage'),
+
+  // vmselect: чтение метрик (tenant — опц.; signal — для отмены запроса)
+  query: (env, expr, time, tenant, signal) =>
+    http.get(`/victoria/${env}/query?${qs({ query: expr, time, tenant })}`, { signal }),
+  queryRange: (env, expr, start, end, step, tenant, signal) =>
+    http.get(`/victoria/${env}/query_range?${qs({ query: expr, start, end, step, tenant })}`, { signal }),
   labels: (env, tenant) => http.get(`/victoria/${env}/labels?${qs({ tenant })}`),
   labelValues: (env, label, tenant, limit) =>
     http.get(`/victoria/${env}/label_values?${qs({ label, tenant, limit })}`),
