@@ -19,6 +19,9 @@
   --info-soft: rgba(139, 233, 253, 0.16);
   --chip: #343746;
   --track: #44475a;
+  /* Тень карточек/выпадашек — своя на тему (на светлой мягче и холоднее). */
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.22), 0 8px 24px rgba(0, 0, 0, 0.14);
+  --shadow-pop: 0 10px 32px rgba(0, 0, 0, 0.32);
   --display: "Space Grotesk", "Manrope", -apple-system, sans-serif;
   --sans: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -43,6 +46,8 @@
   --info-soft: rgba(28, 143, 176, 0.12);
   --chip: #ededf6;
   --track: #d8d8e6;
+  --shadow: 0 1px 2px rgba(35, 30, 60, 0.05), 0 8px 24px rgba(35, 30, 60, 0.07);
+  --shadow-pop: 0 10px 32px rgba(35, 30, 60, 0.16);
   color-scheme: light;
 }
 
@@ -53,30 +58,40 @@
    silences — палитра по умолчанию (фиолетовая), отдельного блока не требует.
    victoria — тёплая коралловая (цвет Victoria Metrics). */
 :root[data-theme="dark"][data-space="victoria"] {
-  --bg: #2b2622;
-  --bg-rail: #241f1c;
-  --panel: #37302c;
-  --panel-2: #2e2825;
-  --border: #4d4239;
-  --border-soft: #3f362f;
+  --bg: #251f1b;            /* глубже, чем было: карточки заметнее отделяются */
+  --bg-rail: #1e1916;
+  --panel: #322a25;
+  --panel-2: #2a231f;
+  --border: #4d4136;
+  --border-soft: #3c332c;
+  /* Приглушённые тексты — ТЁПЛЫЕ серые вместо сине-фиолетовых Dracula: в
+     коралловом пространстве холодный muted выглядел чужим. */
+  --text-dim: #d8cfc6;
+  --text-mute: #a3907f;
   --accent: #ff7a59;
-  --accent-bright: #ffa07d;
-  --accent-soft: rgba(255, 122, 89, 0.18);
-  --chip: #37302c;
-  --track: #4d4239;
+  --accent-bright: #ffa382;
+  --accent-soft: rgba(255, 122, 89, 0.16);
+  --chip: #322a25;
+  --track: #453a30;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.28), 0 8px 24px rgba(12, 8, 5, 0.20);
+  --shadow-pop: 0 10px 32px rgba(12, 8, 5, 0.40);
 }
 :root[data-theme="light"][data-space="victoria"] {
-  --bg: #fbf6f3;
-  --bg-rail: #f4ebe6;
+  --bg: #faf5f1;
+  --bg-rail: #f3eae4;
   --panel: #ffffff;
-  --panel-2: #f7efeb;
-  --border: #ecdcd3;
-  --border-soft: #f2e6df;
+  --panel-2: #f8f0ea;
+  --border: #e9d9ce;
+  --border-soft: #f0e4db;
+  --text-dim: #5c5047;
+  --text-mute: #9c8878;
   --accent: #d1502f;
   --accent-bright: #b8401f;
   --accent-soft: rgba(209, 80, 47, 0.12);
-  --chip: #f4ebe6;
-  --track: #ecdcd3;
+  --chip: #f3eae4;
+  --track: #eadacd;
+  --shadow: 0 1px 2px rgba(75, 50, 35, 0.05), 0 8px 24px rgba(75, 50, 35, 0.08);
+  --shadow-pop: 0 10px 32px rgba(75, 50, 35, 0.16);
 }
 
 /* Victoria — рабочая область заметно шире (как дашборд Prometheus): Query-графику,
@@ -98,6 +113,8 @@ body {
 }
 
 button { font-family: inherit; cursor: pointer; }
+/* Интерактив отвечает на наведение мягко, без скачка. */
+button, .input { transition: color 0.15s, background-color 0.15s, border-color 0.15s, box-shadow 0.15s; }
 input, textarea, select { font-family: var(--mono); }
 
 /* Заголовки — характерным шрифтом, чуть плотнее по трекингу. */
@@ -110,9 +127,10 @@ h1, h2, h3, .tab-title, .head-title, .brand-name, .card-title {
 .card {
   background: var(--panel);
   border: 1px solid var(--border-soft);
-  border-radius: 10px;
+  border-radius: 12px;
   padding: 18px 20px;
   margin-bottom: 16px;
+  box-shadow: var(--shadow);
 }
 .card-head {
   display: flex;
@@ -133,6 +151,17 @@ h1, h2, h3, .tab-title, .head-title, .brand-name, .card-title {
 .card-head .card-title { margin-bottom: 0; }
 .card-hint { color: var(--text-mute); font-family: var(--mono); font-size: 12px; }
 
+/* Заголовки карточек отмечены короткой акцентной чёрточкой (цвет — модуля):
+   взгляд быстрее цепляется, когда карточек несколько (формы, сетка TSDB Status). */
+.card-title::before {
+  content: '';
+  flex: none;
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
 /* --- Поля ввода --- */
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field > label {
@@ -151,7 +180,8 @@ h1, h2, h3, .tab-title, .head-title, .brand-name, .card-title {
   width: 100%;
   outline: none;
 }
-.input:focus, textarea.input:focus { border-color: var(--accent); }
+/* Фокус — акцентная рамка + мягкое кольцо-свечение (видно, где курсор). */
+.input:focus, textarea.input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .input::placeholder { color: var(--text-mute); }
 .input.invalid, textarea.input.invalid { border-color: var(--danger); }
 textarea.input { resize: vertical; min-height: 64px; }
@@ -172,7 +202,7 @@ textarea.input { resize: vertical; min-height: 64px; }
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
-  font-weight: 500;
+  font-weight: 600;
 }
 .btn-primary:hover { background: var(--accent-bright); border-color: var(--accent-bright); }
 .btn-ghost { background: transparent; }

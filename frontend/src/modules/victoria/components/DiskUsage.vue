@@ -1,13 +1,16 @@
 <script setup>
 // Под-вкладка «Диск» (справа от TSDB Status): заполненность дисков по ВСЕМ
-// кластерам VM одним списком. В отличие от других под-вкладок не зависит от
-// выбранного кластера — бэкенд (/victoria/disk-usage) обходит все vm_<env> из
-// окружения. Подпись строки = имя кластера из env-файла (а не лейбл `group`).
+// кластерам VM одним списком, в разбивке по лейблу `group` (группы vmstorage).
+// В отличие от других под-вкладок не зависит от выбранного кластера — бэкенд
+// (/victoria/disk-usage) обходит все vm_<env> из окружения и по каждому отдаёт
+// строку НА КАЖДУЮ группу: занято/свободно/прогноз заполнения (по тем же
+// запросам sum by(group) + предиктивный ETA, что и раньше, но без сворачивания
+// кластера в одно число).
 import { ref, onMounted } from 'vue'
 import Skeleton from '../../../shared/Skeleton.vue'
 import { victoriaApi } from '../api.js'
 
-const rows = ref([]) // [{ env, used, free, total, percent } | { env, error }]
+const rows = ref([]) // [{ env, group, used, free, total, percent, eta_days } | { env, error }]
 const loading = ref(true)
 const error = ref(null)
 
@@ -68,6 +71,7 @@ function fmtEta(days) {
         <thead>
           <tr>
             <th class="l">Кластер</th>
+            <th class="l">Группа</th>
             <th class="r">Занято</th>
             <th class="r">Свободно</th>
             <th class="r">Всего</th>
@@ -76,12 +80,20 @@ function fmtEta(days) {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="r in rows" :key="r.env">
-            <td class="l mono">{{ r.env }}</td>
+          <!-- Имя кластера пишем один раз на блок его групп; граница между
+               кластерами чуть заметнее (cluster-start), внутри блока — мягкая. -->
+          <tr
+            v-for="(r, i) in rows"
+            :key="r.env + '|' + (r.group ?? '')"
+            :class="{ 'cluster-start': i > 0 && rows[i - 1].env !== r.env }"
+          >
+            <td class="l mono envcell">{{ i === 0 || rows[i - 1].env !== r.env ? r.env : '' }}</td>
             <template v-if="r.error">
-              <td class="err" colspan="5">{{ r.error }}</td>
+              <td class="err" colspan="6">{{ r.error }}</td>
             </template>
             <template v-else>
+              <!-- Метрики без лейбла group (обычный Prometheus) — группа «—» -->
+              <td class="l mono grp">{{ r.group || '—' }}</td>
               <td class="r mono">{{ fmtBytes(r.used) }}</td>
               <td class="r mono">{{ fmtBytes(r.free) }}</td>
               <td class="r mono">{{ fmtBytes(r.total) }}</td>
@@ -123,23 +135,28 @@ function fmtEta(days) {
 .tbl th.l, .tbl td.l { text-align: left; }
 .tbl th.r, .tbl td.r { text-align: right; white-space: nowrap; }
 .mono { font-family: var(--mono); }
+/* Имя кластера — раз на блок групп, полужирно; граница между кластерами заметнее. */
+.envcell { font-weight: 600; }
+.cluster-start td { border-top: 1px solid var(--border); }
+/* Группа vmstorage — приглушённо, чтобы взгляд цеплялся сначала за кластер. */
+.grp { color: var(--text-dim); white-space: nowrap; }
 .err { color: var(--danger); font-family: var(--mono); font-size: 12px; }
-/* ETA (Заполнится): цвет по срочности. */
-.eta.ok { color: #50fa7b; }
-.eta.warn { color: #ffb86c; }
+/* ETA (Заполнится): цвет по срочности — спокойные тона, читаются в обеих темах. */
+.eta.ok { color: #3fae72; }
+.eta.warn { color: #dd9a3e; }
 .eta.bad { color: var(--danger); }
 .eta.mute { color: var(--text-mute); }
 
-/* Колонка «Заполнено»: полоса + процент. */
+/* Колонка «Заполнено»: полоса + процент. Цвета в тон ETA. */
 .fillcol { width: 40%; min-width: 220px; }
 .fill { display: flex; align-items: center; gap: 12px; }
-.bar { flex: 1; height: 10px; border-radius: 6px; background: var(--track); overflow: hidden; }
+.bar { flex: 1; height: 9px; border-radius: 6px; background: var(--track); overflow: hidden; }
 .bar-in { height: 100%; border-radius: 6px; transition: width 0.3s; }
 .bar-in.ok { background: var(--accent); }
-.bar-in.warn { background: #ffb86c; }
+.bar-in.warn { background: #dd9a3e; }
 .bar-in.crit { background: var(--danger); }
-.pct { font-size: 12px; min-width: 52px; text-align: right; }
-.pct.warn { color: #ffb86c; }
+.pct { font-size: 12px; min-width: 52px; text-align: right; font-weight: 600; }
+.pct.warn { color: #dd9a3e; }
 .pct.crit { color: var(--danger); }
 
 .empty { color: var(--text-mute); font-size: 13px; padding: 20px 0; }

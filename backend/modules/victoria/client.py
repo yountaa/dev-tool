@@ -85,7 +85,14 @@ async def _get_raw(base: str, path: str, params: dict | None = None) -> bytes:
     except httpx.HTTPError as e:
         raise VictoriaError(f"нет связи с {base}: {e}")
     if resp.status_code >= 400:
-        raise VictoriaError(f"{base} → {resp.status_code}: {resp.text}")
+        # VM кладёт причину в JSON-поле error (например, синтаксис PromQL) —
+        # показываем её текстом, а не сырой JSON-конверт целиком.
+        detail = resp.text
+        try:
+            detail = resp.json().get("error") or detail
+        except ValueError:
+            pass
+        raise VictoriaError(f"{base} → {resp.status_code}: {detail}")
     return resp.content
 
 

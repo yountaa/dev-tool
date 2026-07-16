@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 import logging_setup
 from access import log_config as log_auth_config, request_log_fields, router as access_router
+from share import router as share_router
 from modules.silences import save_hub
 from modules.silences.client import AlertmanagerError
 from modules.silences.routes import router as silences_router
@@ -96,6 +97,7 @@ async def vm_error(request: Request, exc: VictoriaError):
 
 # --- Подключение модулей (1 модуль = 1 router = 1 вкладка) ---------------------
 app.include_router(access_router)     # RBAC уровня приложения: /access/me
+app.include_router(share_router)      # короткие ссылки на вид: POST /share, GET /s/<id>
 app.include_router(silences_router)
 app.include_router(victoria_router)
 

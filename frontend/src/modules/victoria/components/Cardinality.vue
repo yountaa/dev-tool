@@ -155,10 +155,14 @@ function maxOf(arr) { return arr.reduce((m, x) => Math.max(m, x.value || 0), 0) 
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 @media (max-width: 860px) { .grid { grid-template-columns: 1fr; } }
 
-.rows { display: flex; flex-direction: column; gap: 6px; }
+.rows { display: flex; flex-direction: column; gap: 4px; }
 /* Три столбца: имя | шкала | значение. Значение фиксированной ширины и вправо —
-   так числа стоят ровным столбцом у всех строк. */
-.row { display: grid; grid-template-columns: minmax(0, 1fr) 88px 84px; align-items: center; gap: 12px; }
+   так числа стоят ровным столбцом у всех строк. Строка под курсором подсвечена. */
+.row {
+  display: grid; grid-template-columns: minmax(0, 1fr) 88px 84px; align-items: center; gap: 12px;
+  padding: 3px 6px; margin: 0 -6px; border-radius: 6px;
+}
+.row:hover { background: var(--panel-2); }
 .name { font-family: var(--mono); font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bar-track { height: 7px; background: var(--track); border-radius: 4px; overflow: hidden; }
 .bar-fill { display: block; height: 100%; background: var(--accent); border-radius: 4px; }

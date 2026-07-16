@@ -9,9 +9,15 @@ async function request(method, path, body, opts = {}) {
   })
 
   if (!res.ok) {
-    // текст ответа бэкенда — видно, в чём ошибка
+    // Текст ответа бэкенда — видно, в чём ошибка. FastAPI кладёт её в {"detail": …} —
+    // достаём и показываем сам текст, а не сырой JSON-конверт.
     const text = await res.text()
-    throw new Error(`${res.status}: ${text}`)
+    let msg = text
+    try {
+      const j = JSON.parse(text)
+      if (j && j.detail) msg = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail)
+    } catch (e) { /* не JSON — показываем как есть */ }
+    throw new Error(`${res.status}: ${msg}`)
   }
 
   if (res.status === 204) return null

@@ -11,6 +11,8 @@ export default defineConfig({
       '/victoria': 'http://localhost:8000',
       '/access': 'http://localhost:8000',
       '/health': 'http://localhost:8000',
+      '/share': 'http://localhost:8000',   // короткие ссылки: создать
+      '/s/': 'http://localhost:8000',      // короткие ссылки: перейти
     },
   },
 })

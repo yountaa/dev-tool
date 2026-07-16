@@ -2,10 +2,11 @@
 // Корень модуля Victoria Metrics: сверху вкладки окружений (кластеров, из бэкенда),
 // под ними под-вкладки Query / Targets / Rules / Cardinality — показываем только те,
 // что доступны у выбранного кластера (Targets — если есть vmagent, Rules — vmalert).
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, watchEffect, onMounted, onUnmounted } from 'vue'
 import Skeleton from '../../shared/Skeleton.vue'
+import { urlParams, setUrlParams } from '../../shared/urlstate.js'
 import { victoriaApi } from './api.js'
-import QueryExplorer from './components/QueryExplorer.vue'
+import QueryPanel from './components/QueryPanel.vue'
 import TargetsList from './components/TargetsList.vue'
 import RulesAlerts from './components/RulesAlerts.vue'
 import Cardinality from './components/Cardinality.vue'
@@ -33,12 +34,19 @@ const subtabs = computed(() =>
   env.value ? SUBTABS.filter(([, , flag]) => flag === null || env.value[flag]) : [],
 )
 
+// Снимок параметров URL на момент открытия модуля (ссылка от коллеги) — читаем
+// ДО того, как наши вотчеры начнут перезаписывать URL своим состоянием.
+const initial = urlParams()
+let pendingTenant = initial.get('tenant') // применим после выбора кластера
+
 onMounted(async () => {
   try {
     envs.value = await victoriaApi.environments()
-    // Восстанавливаем выбранный кластер по имени (если ещё существует), иначе первый.
-    const savedEnv = localStorage.getItem('vm.env')
-    env.value = envs.value.find((e) => e.name === savedEnv) || envs.value[0] || null
+    // Кластер: из URL (ссылка) → localStorage (своя последняя вкладка) → первый.
+    const wanted = initial.get('env') || localStorage.getItem('vm.env')
+    const urlTab = initial.get('tab')
+    if (urlTab && SUBTABS.some(([id]) => id === urlTab)) tab.value = urlTab
+    env.value = envs.value.find((e) => e.name === wanted) || envs.value[0] || null
   } catch (e) {
     error.value = e.message
   } finally {
@@ -46,10 +54,13 @@ onMounted(async () => {
   }
 })
 
-// При смене окружения: сбрасываем тенант на первый доступный (или null, если
-// мультитенантности нет), откатываем под-вкладку, если она недоступна, и запоминаем.
+// При смене окружения: тенант — из ссылки (один раз при открытии), иначе первый
+// доступный (или null, если мультитенантности нет); откатываем под-вкладку, если
+// она недоступна, и запоминаем кластер.
 watch(env, () => {
-  tenant.value = env.value?.tenants?.[0] ?? null
+  const labels = env.value?.tenants ?? []
+  tenant.value = pendingTenant && labels.includes(pendingTenant) ? pendingTenant : labels[0] ?? null
+  pendingTenant = null
   if (!subtabs.value.some(([id]) => id === tab.value)) {
     tab.value = subtabs.value[0]?.[0] ?? 'query'
   }
@@ -58,6 +69,22 @@ watch(env, () => {
 
 // Запоминаем выбранную под-вкладку между перезагрузками.
 watch(tab, (v) => localStorage.setItem('vm.tab', v))
+
+// Текущий вид — в URL, чтобы ссылку можно было отправить коллеге.
+watchEffect(() => {
+  if (env.value) setUrlParams({ env: env.value.name, tenant: tenant.value, tab: tab.value })
+})
+
+// Смена кластера/тенанта пересоздаёт панель запросов пустой — стираем из URL
+// выражения прошлого кластера, чтобы ссылка не врала (при ПЕРВОМ выборе кластера
+// после открытия старое значение null — это восстановление из ссылки, не трогаем).
+watch([env, tenant], (now, old) => {
+  if (old[0]) setUrlParams({ q: null, mode: null, from: null, to: null, eval: null })
+})
+
+// Уходим с модуля — подчищаем свои параметры запросов из URL (env/tab оставляем:
+// их пишет и валидирует каждый модуль сам).
+onUnmounted(() => setUrlParams({ tenant: null, q: null, mode: null, from: null, to: null, eval: null }))
 </script>
 
 <template>
@@ -112,7 +139,7 @@ watch(tab, (v) => localStorage.setItem('vm.tab', v))
          месте, targets/rules не перечитываются заново при каждом переключении. -->
     <div v-if="env" class="body">
       <KeepAlive :max="10">
-        <QueryExplorer v-if="tab === 'query'" :key="'q-' + env.name + '-' + (tenant || '')" :env="env.name" :tenant="tenant" />
+        <QueryPanel v-if="tab === 'query'" :key="'q-' + env.name + '-' + (tenant || '')" :env="env.name" :tenant="tenant" />
         <TargetsList v-else-if="tab === 'targets'" :key="'t-' + env.name" :env="env.name" />
         <RulesAlerts v-else-if="tab === 'rules'" :key="'r-' + env.name" :env="env.name" />
         <Cardinality v-else-if="tab === 'cardinality'" :key="'c-' + env.name + '-' + (tenant || '')" :env="env.name" :tenant="tenant" />
@@ -127,12 +154,15 @@ watch(tab, (v) => localStorage.setItem('vm.tab', v))
 
 /* Вкладки окружений (кластеров) — те же капсулы и подпись, что в модуле silences. */
 .envs { margin-bottom: 20px; }
-.envs-label { display: block; font-size: 12px; color: var(--text-mute); margin-bottom: 8px; }
+.envs-label {
+  display: block; font-size: 11px; color: var(--text-mute); margin-bottom: 8px;
+  text-transform: uppercase; letter-spacing: 0.08em;
+}
 .env-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .env {
   display: flex; align-items: center; gap: 8px;
   background: var(--panel); border: 1px solid var(--border-soft);
-  color: var(--text-dim); border-radius: 8px; padding: 7px 13px;
+  color: var(--text-dim); border-radius: 10px; padding: 8px 14px;
   font-family: var(--mono); font-size: 13px;
 }
 .env:hover { border-color: var(--border); color: var(--text); }
@@ -147,14 +177,14 @@ watch(tab, (v) => localStorage.setItem('vm.tab', v))
 .tenant .input { width: auto; padding: 6px 10px; font-size: 13px; }
 
 /* Под-вкладки — подчёркиванием, как в модуле silences. */
-.subtabs { display: flex; gap: 22px; border-bottom: 1px solid var(--border-soft); margin-bottom: 22px; }
+.subtabs { display: flex; gap: 24px; border-bottom: 1px solid var(--border-soft); margin-bottom: 22px; }
 .subtab {
-  background: transparent; border: none; color: var(--text-dim);
-  padding: 10px 2px; font-size: 14px;
+  background: transparent; border: none; color: var(--text-mute);
+  padding: 11px 2px; font-size: 14px; letter-spacing: 0.01em;
   border-bottom: 2px solid transparent; margin-bottom: -1px;
 }
 .subtab:hover { color: var(--text); }
-.subtab.active { color: var(--text); border-bottom-color: var(--accent); }
+.subtab.active { color: var(--text); font-weight: 600; border-bottom-color: var(--accent); }
 
 .empty { color: var(--text-mute); font-size: 13px; padding: 20px 0; }
 </style>

@@ -6,6 +6,7 @@ import { ref, computed, watchEffect, onMounted } from 'vue'
 import { modules } from './modules/registry.js'
 import { http } from './shared/api.js'
 import { setTz } from './shared/time.js'
+import { urlParams, setUrlParams } from './shared/urlstate.js'
 
 // Кто залогинен. auth=true — вход через Keycloak (oauth2-proxy), показываем имя.
 // auth=false — локальный режим без входа (имя создателя вводится руками).
@@ -19,8 +20,9 @@ const visible = computed(() =>
   allowed.value ? modules.filter((m) => allowed.value.includes(m.id)) : modules,
 )
 
-// Запоминаем выбранную вкладку между перезагрузками (валидируем — модуль мог исчезнуть).
-const savedModule = localStorage.getItem('activeModule')
+// Активный модуль: сперва из URL (?m=… — ссылка от коллеги), затем из localStorage
+// (своя последняя вкладка), иначе первый. Валидируем — модуль мог исчезнуть.
+const savedModule = urlParams().get('m') || localStorage.getItem('activeModule')
 const activeId = ref(modules.some((m) => m.id === savedModule) ? savedModule : modules[0]?.id)
 const active = computed(() => visible.value.find((m) => m.id === activeId.value))
 
@@ -48,13 +50,36 @@ watchEffect(() => {
 })
 // Пространство-цвет: активная вкладка задаёт data-space на <html>, а theme.css
 // перекрашивает под неё всю палитру (акцент/рельс). Ощущение отдельного места.
-// Заодно запоминаем вкладку — при перезагрузке вернёмся сюда, а не на первый модуль.
+// Заодно запоминаем вкладку (localStorage — для себя, ?m= в URL — для ссылок).
 watchEffect(() => {
   document.documentElement.setAttribute('data-space', activeId.value || '')
-  if (activeId.value) localStorage.setItem('activeModule', activeId.value)
+  if (activeId.value) {
+    localStorage.setItem('activeModule', activeId.value)
+    setUrlParams({ m: activeId.value })
+  }
 })
 function toggleTheme() {
   theme.value = theme.value === 'dark' ? 'light' : 'dark'
+}
+
+// Короткая ссылка на текущий вид. Всё состояние (модуль/кластер/вкладка/запросы)
+// уже лежит в URL — бэкенд сохраняет длинный путь и отдаёт /s/<id>, его копируем
+// в буфер. Кнопка на пару секунд показывает результат.
+const shared = ref('') // '' | 'ok' | 'err'
+async function shareLink() {
+  try {
+    const r = await http.post('/share', { path: window.location.pathname + window.location.search })
+    const short = `${window.location.origin}/s/${r.id}`
+    try {
+      await navigator.clipboard.writeText(short)
+    } catch (e) {
+      window.prompt('Скопируй короткую ссылку:', short) // буфер недоступен (не-HTTPS)
+    }
+    shared.value = 'ok'
+  } catch (e) {
+    shared.value = 'err'
+  }
+  setTimeout(() => { shared.value = '' }, 2000)
 }
 </script>
 
@@ -106,6 +131,18 @@ function toggleTheme() {
       <header class="head">
         <span class="head-title">{{ active.title }}</span>
         <span class="head-sub">— {{ active.subtitle }}</span>
+
+        <!-- Короткая ссылка на текущий вид (фильтры/запрос — из URL) -->
+        <button
+          class="share"
+          :class="{ ok: shared === 'ok' }"
+          title="Скопировать короткую ссылку на этот вид"
+          @click="shareLink"
+        >
+          <svg v-if="shared !== 'ok'" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" /><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" /></svg>
+          <svg v-else viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+          <span>{{ shared === 'ok' ? 'скопировано' : shared === 'err' ? 'ошибка' : 'ссылка' }}</span>
+        </button>
 
         <!-- Кто вошёл -->
         <div v-if="auth" class="user">
@@ -188,9 +225,18 @@ function toggleTheme() {
 .head-title { font-size: 17px; font-weight: 700; }
 .head-sub { color: var(--text-mute); font-family: var(--mono); font-size: 13px; margin-left: 8px; }
 
-/* Плашка пользователя справа в шапке */
+/* Кнопка «ссылка» — короткий URL текущего вида; та же капсула, что и плашка юзера. */
+.share {
+  margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 7px;
+  background: var(--panel); border: 1px solid var(--border-soft); color: var(--text-dim);
+  border-radius: 20px; padding: 6px 13px; font-size: 12px; white-space: nowrap;
+}
+.share:hover { color: var(--accent-bright); border-color: var(--accent); }
+.share.ok { color: var(--accent-bright); border-color: var(--accent); background: var(--accent-soft); }
+
+/* Плашка пользователя справа в шапке (рядом с кнопкой «ссылка») */
 .user {
-  margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 8px;
+  margin-left: 10px; flex: none; display: inline-flex; align-items: center; gap: 8px;
   background: var(--panel); border: 1px solid var(--border-soft);
   border-radius: 20px; padding: 6px 14px; font-size: 13px;
   white-space: nowrap;

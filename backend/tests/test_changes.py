@@ -1,11 +1,14 @@
 """Тесты на изменения из ревью: параллельность и обработка ошибок на вкладке
-«Алерты», общий httpx-клиент silences, тип/логика resolve_tenant.
+«Алерты», общий httpx-клиент silences, тип/логика resolve_tenant, разбивка
+«Диска» по группам vmstorage, короткие ссылки (/share, /s/<id>).
 
 Внешние сервисы (Alertmanager/Prometheus/VM) не нужны — их вызовы подменяем.
 Запуск:  cd backend && python -m unittest discover tests
 """
 import asyncio
+import json
 import os
+import tempfile
 import unittest
 
 # Окружение задаём ДО импорта модулей приложения — их config читает переменные при
@@ -23,6 +26,10 @@ from modules.silences import client as am_client
 from modules.silences.client import AlertmanagerError
 from modules.silences.routes import router as silences_router
 from modules.victoria import config as vconfig
+from modules.victoria import disk as vdisk
+from modules.victoria.client import VictoriaError
+import share
+from share import router as share_router
 
 
 def _app() -> TestClient:
@@ -167,6 +174,148 @@ class SharedHttpClient(unittest.TestCase):
         """trust_env=False — запрос к внутреннему адресу не уводится в HTTP(S)_PROXY."""
         am_client._client = None
         self.assertFalse(am_client._http().trust_env)
+
+
+class DiskUsageByGroup(unittest.TestCase):
+    """victoria.disk: под-вкладка «Диск» отдаёт строку на КАЖДУЮ группу vmstorage."""
+
+    def setUp(self):
+        self._orig_query = vdisk.client.query
+
+    def tearDown(self):
+        vdisk.client.query = self._orig_query
+
+    @staticmethod
+    def _vec(pairs):
+        """Ответ vmselect в формате Prometheus: [(group|None, value), …] → bytes."""
+        return json.dumps({"data": {"result": [
+            {"metric": ({"group": g} if g is not None else {}), "value": [0, v]}
+            for g, v in pairs
+        ]}}).encode()
+
+    def test_rows_per_group(self):
+        """По группе на строку: свои занято/свободно/процент, ETA — где есть."""
+        vec = self._vec
+
+        async def fake_query(env, expr, time=None, tenant=None):
+            if "[10m:]" in expr:                      # ETA_DAYS_EXPR (предиктивный)
+                return vec([("main", "45")])
+            if "vm_data_size_bytes" in expr:          # USED_EXPR
+                return vec([("main", "600"), ("cold", "200")])
+            return vec([("main", "400"), ("cold", "800")])   # FREE_EXPR
+        vdisk.client.query = fake_query
+
+        rows = asyncio.run(vdisk._one("x"))
+        self.assertEqual([r["group"] for r in rows], ["cold", "main"])  # сортировка по группе
+        main = rows[1]
+        self.assertEqual(main["used"], 600.0)
+        self.assertEqual(main["free"], 400.0)
+        self.assertEqual(main["total"], 1000.0)
+        self.assertAlmostEqual(main["percent"], 60.0)
+        self.assertEqual(main["eta_days"], 45.0)
+        self.assertIsNone(rows[0]["eta_days"])        # у cold прогноза нет — «—», не ошибка
+
+    def test_cluster_down_single_error_row(self):
+        """Кластер целиком недоступен — одна строка с ошибкой, без падения вкладки."""
+        async def fake_query(env, expr, time=None, tenant=None):
+            raise VictoriaError("нет связи")
+        vdisk.client.query = fake_query
+
+        rows = asyncio.run(vdisk._one("edge"))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["env"], "edge")
+        self.assertIn("нет связи", rows[0]["error"])
+
+    def test_no_group_label_becomes_empty_group(self):
+        """Метрики без лейбла group (обычный Prometheus) — одна строка с group=""."""
+        vec = self._vec
+
+        async def fake_query(env, expr, time=None, tenant=None):
+            if "[10m:]" in expr:
+                return vec([])
+            return vec([(None, "100")])
+        vdisk.client.query = fake_query
+
+        rows = asyncio.run(vdisk._one("solo"))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["group"], "")
+        self.assertEqual(rows[0]["total"], 200.0)
+
+
+class ShortLinks(unittest.TestCase):
+    """/share и /s/<id>: сохранить путь, получить редирект; защита от open redirect."""
+
+    def setUp(self):
+        # Хранилище — временный файл, чтобы тесты не трогали data/short_links.json.
+        self._tmp = tempfile.TemporaryDirectory()
+        os.environ["SHORT_LINKS_FILE"] = os.path.join(self._tmp.name, "links.json")
+        app = FastAPI()
+        app.include_router(share_router)
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        os.environ.pop("SHORT_LINKS_FILE", None)
+        self._tmp.cleanup()
+
+    def test_roundtrip(self):
+        """Создали ссылку → /s/<id> редиректит ровно на сохранённый путь."""
+        path = "/?m=victoria&env=full&tab=query&q=up&mode=graph"
+        r = self.client.post("/share", json={"path": path})
+        self.assertEqual(r.status_code, 200)
+        link_id = r.json()["id"]
+
+        r2 = self.client.get(f"/s/{link_id}", follow_redirects=False)
+        self.assertEqual(r2.status_code, 302)
+        self.assertEqual(r2.headers["location"], path)
+
+    def test_same_path_same_id(self):
+        """Повторное «поделиться» тем же видом не плодит новые id."""
+        a = self.client.post("/share", json={"path": "/?m=silences&env=prod"}).json()["id"]
+        b = self.client.post("/share", json={"path": "/?m=silences&env=prod"}).json()["id"]
+        self.assertEqual(a, b)
+
+    def test_rejects_absolute_and_protocol_relative(self):
+        """Абсолютные URL и //host не принимаем — иначе open redirect с нашего домена."""
+        for bad in ("https://evil.example/x", "//evil.example/x", "notslash"):
+            r = self.client.post("/share", json={"path": bad})
+            self.assertEqual(r.status_code, 400, bad)
+
+    def test_unknown_id_404(self):
+        r = self.client.get("/s/nope1234", follow_redirects=False)
+        self.assertEqual(r.status_code, 404)
+
+
+class ShortLinksPostgres(unittest.TestCase):
+    """STORAGE_BACKEND=postgres: ссылки идут в БД (вместо psycopg2 — стаб-словарь)."""
+
+    def setUp(self):
+        self._orig = (share.USE_PG, share._pg_save, share._pg_get)
+        self.db = {}
+        share.USE_PG = True
+        share._pg_save = lambda link_id, path: self.db.__setitem__(link_id, path)
+        share._pg_get = lambda link_id: self.db.get(link_id)
+        app = FastAPI()
+        app.include_router(share_router)
+        self.client = TestClient(app)
+
+    def tearDown(self):
+        share.USE_PG, share._pg_save, share._pg_get = self._orig
+
+    def test_roundtrip_via_db(self):
+        path = "/?m=victoria&env=prod&q=up"
+        link_id = self.client.post("/share", json={"path": path}).json()["id"]
+        self.assertEqual(self.db[link_id], path)   # легло в «БД», а не в файл
+        r = self.client.get(f"/s/{link_id}", follow_redirects=False)
+        self.assertEqual(r.status_code, 302)
+        self.assertEqual(r.headers["location"], path)
+
+    def test_db_down_returns_503(self):
+        def boom(link_id, path):
+            raise RuntimeError("нет связи с БД")
+        share._pg_save = boom
+        r = self.client.post("/share", json={"path": "/?m=victoria"})
+        self.assertEqual(r.status_code, 503)
+        self.assertIn("хранилище ссылок недоступно", r.json()["detail"])
 
 
 class ResolveTenant(unittest.TestCase):

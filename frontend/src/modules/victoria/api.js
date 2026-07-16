@@ -15,8 +15,9 @@ export const victoriaApi = {
   // кластеры-окружения = вкладки; у каждого флаги доступных под-вкладок
   environments: () => http.get('/victoria/environments'),
 
-  // под-вкладка «Диск»: заполненность по ВСЕМ кластерам сразу (не привязана к env)
-  // [{ env, used, free, total, percent } | { env, error }]
+  // под-вкладка «Диск»: заполненность по ВСЕМ кластерам сразу (не привязана к env),
+  // по строке на каждую группу vmstorage (label group)
+  // [{ env, group, used, free, total, percent, eta_days } | { env, error }]
   diskUsage: () => http.get('/victoria/disk-usage'),
 
   // vmselect: чтение метрик (tenant — опц.; signal — для отмены запроса)

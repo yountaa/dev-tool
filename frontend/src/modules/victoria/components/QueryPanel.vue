@@ -1,8 +1,8 @@
 <script>
 // Кэш имён метрик для автодополнения: ОБЩИЙ для всех панелей (обычный <script>
 // выполняется один раз на модуль, в отличие от <script setup> — тот на каждую
-// панель). Без него каждая новая панель и каждое переключение вкладки заново
-// тянули бы список из тысяч имён.
+// панель). Без него каждое переключение вкладки заново тянуло бы список из
+// тысяч имён.
 const namesCache = new Map() // 'env|tenant' -> { at, names }
 const labelNamesCache = new Map()  // 'env|tenant' -> { at, names } — имена лейблов
 const labelValuesCache = new Map() // 'env|tenant|label' -> { at, values } — значения лейбла
@@ -10,31 +10,62 @@ const NAMES_TTL = 5 * 60 * 1000
 </script>
 
 <script setup>
-// Одна панель запроса «как в Prometheus»: ввод PromQL/MetricsQL с живым
-// автодополнением (метрики + функции), режимы Graph (range → uPlot) и Table
-// (instant → таблица). Несколько таких панелей складываются в QueryExplorer
-// (кнопка «добавить запрос» снизу — как «Add Panel» в Prometheus).
+// Панель запросов «как в vmui» (VictoriaMetrics): НЕСКОЛЬКО выражений
+// PromQL/MetricsQL в одной панели. «+ Добавить запрос» добавляет поле выражения
+// (аналог Add Query в vmui), и данные ВСЕХ запросов показываются вместе:
+// Graph — серии всех запросов на одном графике, снизу легенда с метрикой и её
+// значением; Table — общая таблица (с номером запроса, когда их несколько);
+// JSON — сырые ответы. Автодополнение живёт у поля, которое в фокусе.
 // Бэкенд — тонкий прокси, отдаёт Prometheus-JSON.
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 import Skeleton from '../../../shared/Skeleton.vue'
+import { urlParams, setUrlParams } from '../../../shared/urlstate.js'
 import { victoriaApi } from '../api.js'
 
 const props = defineProps({
   env: { type: String, required: true },
   tenant: { type: String, default: null }, // мультитенантный VM; иначе null
-  index: { type: Number, default: 1 },      // номер панели (для шапки)
-  removable: { type: Boolean, default: false }, // показывать кнопку «убрать»
 })
-defineEmits(['remove'])
 
 // Лимиты, чтобы тяжёлый запрос не подвесил браузер.
-const MAX_TABLE_ROWS = 1000  // строк в таблице (instant)
-const MAX_SERIES = 20        // линий на графике (range)
+const MAX_TABLE_ROWS = 1000  // строк в таблице (instant), суммарно по всем запросам
+const MAX_SERIES = 20        // линий на графике (range), суммарно по всем запросам
 const MAX_METRICS = 10000    // имён метрик в автокомплите
 
-const expr = ref('')
+// --- Запросы: несколько выражений в одной панели -------------------------------
+let qseq = 0
+const queries = ref([{ id: ++qseq, text: '' }]) // поля выражений; всегда хотя бы одно
+const activeIdx = ref(0) // чьё поле в фокусе — к нему привязаны подсказки/автопары
+const tas = ref([])      // textarea каждого поля (по индексу строки)
+const hasExpr = computed(() => queries.value.some((q) => q.text.trim()))
+// Был ли последний запуск мультизапросным — тогда показываем бейджи q1/q2 у серий.
+const multiRun = ref(false)
+
+function setTa(el, i) { if (el) tas.value[i] = el }
+function activeTa() { return tas.value[activeIdx.value] }
+function activeText() { return queries.value[activeIdx.value]?.text ?? '' }
+function setActiveText(t) { const q = queries.value[activeIdx.value]; if (q) q.text = t }
+
+function addQuery() {
+  queries.value.push({ id: ++qseq, text: '' })
+  nextTick(() => {
+    const el = tas.value[queries.value.length - 1]
+    if (el) el.focus()
+  })
+}
+function removeQuery(i) {
+  // Последнее поле не убираем — всегда хотя бы один запрос.
+  if (queries.value.length <= 1) return
+  queries.value.splice(i, 1)
+  tas.value.splice(i, 1)
+  showSug.value = false
+  if (activeIdx.value >= queries.value.length) activeIdx.value = queries.value.length - 1
+  // Как в vmui: убрал запрос — график/таблица сразу пересчитываются без него.
+  if (hasExpr.value && !loading.value) run()
+}
+
 const mode = ref('graph') // 'graph' (range) | 'table' (instant) | 'json' (instant, сырой JSON)
 
 // --- Диапазон времени --------------------------------------------------------
@@ -55,12 +86,25 @@ const nowSec = () => Math.floor(Date.now() / 1000)
 const fromStr = ref(toLocalInput(nowSec() - 3600)) // «От» для Graph
 const toStr = ref(toLocalInput(nowSec()))          // «До» для Graph
 const evalStr = ref('')                            // «Время расчёта» для Table (пусто = сейчас)
+
+// Восстановление вида из URL (ссылка от коллеги): выражения, режим, время.
+// Только если ссылка про ЭТОТ кластер/тенант — иначе панель стартует чистой.
+// (env/tenant в URL пишет VictoriaModule до создания панели.)
+const init = urlParams()
+if (init.get('env') === props.env && (init.get('tenant') || null) === (props.tenant || null)) {
+  const qs = init.getAll('q').filter((s) => s.trim())
+  if (qs.length) queries.value = qs.map((text) => ({ id: ++qseq, text }))
+  if (['graph', 'table', 'json'].includes(init.get('mode'))) mode.value = init.get('mode')
+  if (init.get('from')) fromStr.value = init.get('from')
+  if (init.get('to')) toStr.value = init.get('to')
+  if (init.get('eval')) evalStr.value = init.get('eval')
+}
 const loading = ref(false)
-const error = ref(null)
+const errors = ref([]) // ошибки по запросам («Запрос N: …», когда запросов несколько)
 const meta = ref('') // строка-сводка под запросом (серий, время расчёта)
 const truncated = ref('') // предупреждение об обрезке результата
 
-const instant = ref([]) // [{ metric, value }] для режима Table (уже обрезано до MAX_TABLE_ROWS)
+const instant = ref([]) // [{ qi, metric, value }] для режима Table (уже обрезано до MAX_TABLE_ROWS)
 const rawJson = ref('')  // сырой JSON ответа VM для режима JSON (как вкладка JSON в vmui)
 
 // Колонки таблицы = объединение имён лейблов по всем сериям (как таблица в vmui:
@@ -77,7 +121,6 @@ const columns = computed(() => {
 })
 
 // --- Автодополнение ----------------------------------------------------------
-const ta = ref(null) // ссылка на textarea
 const metricNames = ref([]) // имена метрик (__name__)
 const labelNames = ref([])  // имена лейблов (подсказки внутри {})
 const labelValues = ref([]) // значения активного лейбла (подсказки после label=")
@@ -102,23 +145,25 @@ const PRESETS = [['5m', 300], ['15m', 900], ['1h', 3600], ['6h', 21600], ['24h',
 function setPreset(sec) {
   toStr.value = toLocalInput(nowSec())
   fromStr.value = toLocalInput(nowSec() - sec)
-  if (expr.value.trim() && !loading.value) run()
+  if (hasExpr.value && !loading.value) run()
 }
 // Шаг «Время расчёта» стрелками ‹ › — на 5 минут; пусто трактуем как «сейчас».
 function stepEval(deltaSec) {
   const base = fromLocalInput(evalStr.value) ?? nowSec()
   evalStr.value = toLocalInput(base + deltaSec)
-  if (expr.value.trim() && !loading.value) run()
+  if (hasExpr.value && !loading.value) run()
 }
 
-const COLORS = ['#ff7a59', '#8be9fd', '#50fa7b', '#ffb86c', '#bd93f9', '#ff79c6', '#f1fa8c', '#6272a4', '#ff5555', '#69ff94']
+// Палитра линий графика: первая — фирменный коралл VM, дальше контрастные, но
+// не кислотные соседи (подобраны под тёплый фон вкладки и светлую тему).
+const COLORS = ['#ff7a59', '#56b8e6', '#6fcb85', '#f0b653', '#a98ff0', '#ef6f9d', '#4ed0b4', '#8f9ff2', '#d3c356', '#e08e77']
 
 const chartEl = ref(null)
-const chartSeries = ref([]) // [{ label, color, show }] — легенда под графиком
+const chartSeries = ref([]) // [{ qi, label, color, value, show }] — легенда под графиком
 let chart = null
 let ro = null
-let inflight = null // AbortController текущего запроса (для кнопки «Отмена»)
-let seriesMeta = [] // metric-объекты серий графика (для аккуратного тултипа по наведению)
+let inflight = null // AbortController текущего запуска (общий на все запросы; «Отмена»)
+let seriesMeta = [] // [{ metric, qi }] серий графика (для аккуратного тултипа по наведению)
 
 let metricsTried = false
 async function loadMetrics() {
@@ -164,13 +209,17 @@ async function loadLabelValues(label) {
   }
 }
 
-onMounted(() => { loadMetrics(); autosize() })
+onMounted(() => {
+  loadMetrics()
+  nextTick(autosizeAll)
+  if (hasExpr.value) run() // выражения пришли из ссылки — сразу показываем результат
+})
 
 // Поле запроса растёт под содержимое: сбрасываем высоту и подгоняем под scrollHeight
 // (с потолком — дальше внутренняя прокрутка, чтобы огромный запрос не занял экран).
 const EXPR_MAX_H = 320
-function autosize() {
-  const el = ta.value
+function autosize(i) {
+  const el = tas.value[i]
   if (!el) return
   // Схлопываем до 0 перед замером: так scrollHeight = реальная высота содержимого
   // (сброс в 'auto' на первом кадре иногда возвращал завышенное значение → поле
@@ -182,10 +231,10 @@ function autosize() {
   // прячем: при height=scrollHeight скролл не нужен, но браузер иногда рисовал его.
   el.style.overflowY = full > EXPR_MAX_H ? 'auto' : 'hidden'
 }
-// Ловим и ручной ввод, и программную вставку (автодополнение pick()).
-watch(expr, () => nextTick(autosize))
+function autosizeAll() { queries.value.forEach((_, i) => autosize(i)) }
 
-function onInput() { refreshSug(); autosize() }
+function onInput(i) { activeIdx.value = i; refreshSug(); autosize(i) }
+function onFocus(i) { activeIdx.value = i; refreshSug() }
 
 // Смена режима — перезапускаем запрос (как в Prometheus). При уходе С ГРАФИКА в
 // Table/JSON переносим конец выбранного диапазона (До) во «Время расчёта», чтобы
@@ -193,7 +242,8 @@ function onInput() { refreshSug(); autosize() }
 // как диапазон выбрали мышью прямо по графику).
 watch(mode, (now, prev) => {
   if ((now === 'table' || now === 'json') && prev === 'graph') evalStr.value = toStr.value
-  if (expr.value.trim() && !loading.value) run()
+  setUrlParams({ mode: now }) // режим в URL — даже если запрос ещё не выполнялся
+  if (hasExpr.value && !loading.value) run()
 })
 
 onBeforeUnmount(() => {
@@ -204,9 +254,9 @@ onBeforeUnmount(() => {
 
 // Токен под курсором (последовательность из букв/цифр/_/:) — то, что дополняем.
 function currentToken() {
-  const el = ta.value
-  const pos = el ? el.selectionStart : expr.value.length
-  const text = expr.value
+  const el = activeTa()
+  const pos = el ? el.selectionStart : activeText().length
+  const text = activeText()
   let start = pos
   while (start > 0 && /[A-Za-z0-9_:]/.test(text[start - 1])) start--
   return { token: text.slice(start, pos), start, end: pos }
@@ -221,9 +271,9 @@ const sugRange = ref({ start: 0, end: 0 })
 // Внутри {} смотрим ТЕКУЩУЮ клаузу — от последней запятой (или самой {) до курсора,
 // чтобы после завершённого матчера (job="node") не сыпать невпопад именами лейблов.
 function suggestContext() {
-  const el = ta.value
-  const pos = el ? el.selectionStart : expr.value.length
-  const text = expr.value.slice(0, pos)
+  const el = activeTa()
+  const pos = el ? el.selectionStart : activeText().length
+  const text = activeText().slice(0, pos)
   const open = text.lastIndexOf('{')
   const close = text.lastIndexOf('}')
   if (open <= close) return { kind: 'metric' }         // не внутри {}
@@ -285,18 +335,21 @@ async function refreshSug() {
 
 function pick(item) {
   const { start, end } = sugRange.value
-  const before = expr.value.slice(0, start)
-  const after = expr.value.slice(end)
-  expr.value = before + item + after
+  const text = activeText()
+  const before = text.slice(0, start)
+  const after = text.slice(end)
+  setActiveText(before + item + after)
   showSug.value = false
   nextTick(() => {
     const pos = (before + item).length
-    if (ta.value) { ta.value.focus(); ta.value.setSelectionRange(pos, pos) }
+    const el = activeTa()
+    if (el) { el.focus(); el.setSelectionRange(pos, pos) }
+    autosize(activeIdx.value)
   })
 }
 
 function setCaret(pos) {
-  const el = ta.value
+  const el = activeTa()
   if (!el) return
   el.focus()
   el.setSelectionRange(pos, pos)
@@ -309,10 +362,10 @@ function setCaret(pos) {
 //   Backspace между пустой парой удаляет обе половинки (стёр — снова пишешь сам).
 // Возвращает true, если событие обработано (дальше в onKeydown не идём).
 function autoPair(e) {
-  const el = ta.value
+  const el = activeTa()
   if (!el) return false
   const s = el.selectionStart, en = el.selectionEnd
-  const text = expr.value
+  const text = activeText()
   const next = text[en] || ''
 
   // печать поверх закрывающего — не плодим второй символ
@@ -325,8 +378,8 @@ function autoPair(e) {
   const close = e.key === '{' ? '}' : e.key === '"' ? '"' : null
   if (close && s === en) {
     e.preventDefault()
-    expr.value = text.slice(0, s) + e.key + close + text.slice(en)
-    nextTick(() => { setCaret(s + 1); refreshSug(); autosize() })
+    setActiveText(text.slice(0, s) + e.key + close + text.slice(en))
+    nextTick(() => { setCaret(s + 1); refreshSug(); autosize(activeIdx.value) })
     return true
   }
   // Backspace между пустой парой {}/"" — сносим обе
@@ -334,15 +387,16 @@ function autoPair(e) {
     const prev = text[s - 1]
     if ((prev === '{' && next === '}') || (prev === '"' && next === '"')) {
       e.preventDefault()
-      expr.value = text.slice(0, s - 1) + text.slice(en + 1)
-      nextTick(() => { setCaret(s - 1); refreshSug(); autosize() })
+      setActiveText(text.slice(0, s - 1) + text.slice(en + 1))
+      nextTick(() => { setCaret(s - 1); refreshSug(); autosize(activeIdx.value) })
       return true
     }
   }
   return false
 }
 
-function onKeydown(e) {
+function onKeydown(i, e) {
+  activeIdx.value = i
   if (autoPair(e)) return
   if (showSug.value && suggestions.value.length) {
     if (e.key === 'ArrowDown') { e.preventDefault(); sugIndex.value = (sugIndex.value + 1) % suggestions.value.length; return }
@@ -361,60 +415,113 @@ function labelsStr(m) {
   return rest ? `${name}{${rest}}` : name
 }
 
+// Непустые выражения на запуск: qi — номер поля (для бейджей q1/q2 и ошибок).
+function runItems() {
+  return queries.value
+    .map((q, i) => ({ qi: i, expr: q.text.trim() }))
+    .filter((x) => x.expr)
+}
+
 async function run() {
-  if (!expr.value.trim()) return
+  const items = runItems()
+  if (!items.length) return
+  // Выражения/режим/время — в URL: ссылка на страницу воспроизводит этот запрос.
+  setUrlParams({
+    q: items.map((x) => x.expr),
+    mode: mode.value,
+    from: mode.value === 'graph' ? fromStr.value : null,
+    to: mode.value === 'graph' ? toStr.value : null,
+    eval: mode.value !== 'graph' ? evalStr.value : null,
+  })
   showSug.value = false
   if (inflight) inflight.abort()        // отменяем предыдущий, если ещё летит
   const controller = new AbortController()
   inflight = controller
   loading.value = true
-  error.value = null
+  errors.value = []
   meta.value = ''
   truncated.value = ''
+  multiRun.value = items.length > 1
   const t0 = performance.now()
   try {
-    // Graph — range-запрос; Table и JSON — instant (мгновенное значение).
-    const n = mode.value === 'graph' ? await runRange(controller.signal) : await runInstant(controller.signal)
+    // Graph — range-запросы; Table и JSON — instant (мгновенное значение).
+    const n = mode.value === 'graph'
+      ? await runRange(items, controller.signal)
+      : await runInstant(items, controller.signal)
     meta.value = `${n} серий · ${Math.round(performance.now() - t0)} мс`
   } catch (e) {
-    if (e.name !== 'AbortError') error.value = e.message  // отмену пользователем ошибкой не считаем
+    if (e.name !== 'AbortError') errors.value = [e.message]  // отмену пользователем ошибкой не считаем
   } finally {
-    // сбрасываем состояние только если это всё ещё НАШ запрос (новый мог стартовать)
+    // сбрасываем состояние только если это всё ещё НАШ запуск (новый мог стартовать)
     if (inflight === controller) { loading.value = false; inflight = null }
   }
 }
 
-// Отмена долгого запроса — рвём fetch через AbortController.
+// Отмена долгого запроса — рвём fetch через AbortController (общий на все запросы).
 function cancel() { if (inflight) inflight.abort() }
 
-async function runInstant(signal) {
+// Все выражения летят ПАРАЛЛЕЛЬНО; упавшее не роняет остальные — по нему своя
+// ошибка «Запрос N: …», успешные рисуем. Отмена (Abort) пробрасывается наверх.
+async function settle(items, promises) {
+  const settled = await Promise.allSettled(promises)
+  const ok = []
+  settled.forEach((s, k) => {
+    if (s.status === 'rejected') {
+      if (s.reason && s.reason.name === 'AbortError') throw s.reason
+      const prefix = items.length > 1 ? `Запрос ${items[k].qi + 1}: ` : ''
+      errors.value.push(prefix + (s.reason?.message ?? String(s.reason)))
+    } else {
+      ok.push({ qi: items[k].qi, expr: items[k].expr, r: s.value })
+    }
+  })
+  return ok
+}
+
+async function runInstant(items, signal) {
   destroyChart()
-  const r = await victoriaApi.query(props.env, expr.value, fromLocalInput(evalStr.value), props.tenant, signal)
-  rawJson.value = JSON.stringify(r.data ?? r, null, 2)   // для режима JSON
-  const rt = r.data?.resultType
-  let rows
-  if (rt === 'scalar' || rt === 'string') {
-    // скаляр/строка — одна «серия» без лейблов, значение во второй позиции.
-    rows = [{ metric: { __name__: rt }, value: r.data.result?.[1] ?? '' }]
+  const time = fromLocalInput(evalStr.value)
+  const ok = await settle(items, items.map(({ expr }) =>
+    victoriaApi.query(props.env, expr, time, props.tenant, signal)))
+  // JSON: один запрос — сырой ответ как есть (как вкладка JSON в vmui);
+  // несколько — массив пар {query, response}, чтобы было видно, чей это ответ.
+  if (items.length > 1) {
+    rawJson.value = JSON.stringify(ok.map(({ expr, r }) => ({ query: expr, response: r })), null, 2)
   } else {
-    rows = (r.data?.result || []).map((s) => ({ metric: s.metric || {}, value: s.value ? s.value[1] : '' }))
+    rawJson.value = ok.length ? JSON.stringify(ok[0].r, null, 2) : ''
+  }
+  const rows = []
+  for (const { qi, r } of ok) {
+    const rt = r.data?.resultType
+    if (rt === 'scalar' || rt === 'string') {
+      // скаляр/строка — одна «серия» без лейблов, значение во второй позиции.
+      rows.push({ qi, metric: { __name__: rt }, value: r.data.result?.[1] ?? '' })
+    } else {
+      for (const s of r.data?.result || []) {
+        rows.push({ qi, metric: s.metric || {}, value: s.value ? s.value[1] : '' })
+      }
+    }
   }
   instant.value = rows.slice(0, MAX_TABLE_ROWS)
   if (rows.length > MAX_TABLE_ROWS) truncated.value = `показаны первые ${MAX_TABLE_ROWS} из ${rows.length} серий`
   return rows.length
 }
 
-async function runRange(signal) {
+async function runRange(items, signal) {
   instant.value = []
   const end = fromLocalInput(toStr.value) ?? nowSec()
   const start = fromLocalInput(fromStr.value) ?? (end - 3600)
   if (start >= end) throw new Error('«От» должно быть раньше «До»')
   const step = Math.max(1, Math.floor((end - start) / 400))
-  const r = await victoriaApi.queryRange(props.env, expr.value, start, end, step, props.tenant, signal)
-  const res = r.data?.result || []
-  await drawChart(res.slice(0, MAX_SERIES))
-  if (res.length > MAX_SERIES) truncated.value = `на графике первые ${MAX_SERIES} из ${res.length} серий`
-  return res.length
+  const ok = await settle(items, items.map(({ expr }) =>
+    victoriaApi.queryRange(props.env, expr, start, end, step, props.tenant, signal)))
+  // Серии ВСЕХ запросов — на один общий график (как в vmui).
+  const merged = []
+  for (const { qi, r } of ok) {
+    for (const s of r.data?.result || []) merged.push({ qi, metric: s.metric || {}, values: s.values || [] })
+  }
+  await drawChart(merged.slice(0, MAX_SERIES))
+  if (merged.length > MAX_SERIES) truncated.value = `на графике первые ${MAX_SERIES} из ${merged.length} серий`
+  return merged.length
 }
 
 function escapeHtml(s) {
@@ -422,7 +529,8 @@ function escapeHtml(s) {
 }
 
 // Плагин-тултип: вместо гигантской легенды показываем по наведению ближайшую к
-// курсору серию — цвет, ПОЛНОЕ имя с лейблами, значение и время.
+// курсору серию — цвет, ПОЛНОЕ имя с лейблами, значение и время (+ номер запроса,
+// когда запросов несколько).
 function tooltipPlugin() {
   let tip
   return {
@@ -449,14 +557,16 @@ function tooltipPlugin() {
         const t = u.data[0][idx]
         // Имя метрики и лейблы — по отдельности: имя строкой сверху, каждый лейбл
         // отдельной строкой key=value. Так читается даже при десятке лейблов.
-        const metric = seriesMeta[best - 1] || {}
+        const sm = seriesMeta[best - 1] || { metric: {}, qi: 0 }
+        const metric = sm.metric
         const name = metric.__name__ || s.label || 'значение'
+        const qBadge = multiRun.value ? `<span class="qe-tip-qn">q${sm.qi + 1}</span>` : ''
         const labelRows = Object.entries(metric)
           .filter(([k]) => k !== '__name__')
           .map(([k, v]) => `<div class="qe-tip-row"><span class="qe-tip-k">${escapeHtml(k)}</span><span class="qe-tip-val">${escapeHtml(v)}</span></div>`)
           .join('')
         tip.innerHTML =
-          `<div class="qe-tip-h"><span class="qe-tip-dot" style="background:${s.stroke}"></span><span class="qe-tip-name">${escapeHtml(name)}</span></div>` +
+          `<div class="qe-tip-h"><span class="qe-tip-dot" style="background:${s.stroke}"></span><span class="qe-tip-name">${escapeHtml(name)}</span>${qBadge}</div>` +
           (labelRows ? `<div class="qe-tip-labels">${labelRows}</div>` : '') +
           `<div class="qe-tip-foot"><span class="qe-tip-v">${bestVal}</span><span class="qe-tip-t">${new Date(t * 1000).toLocaleString()}</span></div>`
         tip.style.display = 'block'
@@ -519,14 +629,16 @@ async function drawChart(series) {
       spanGaps: true,
     })
   })
-  // Легенда под графиком: цвет + полное имя серии + последнее значение, с управлением видимостью.
+  // Легенда под графиком: цвет + полное имя серии + последнее значение (и номер
+  // запроса, когда их несколько), с управлением видимостью.
   chartSeries.value = series.map((s, i) => ({
+    qi: s.qi ?? 0,
     label: labelsStr(s.metric) || `series ${i + 1}`,
     color: COLORS[i % COLORS.length],
     value: lastValue(s),
     show: true,
   }))
-  seriesMeta = series.map((s) => s.metric || {}) // для тултипа: имя + лейблы по отдельности
+  seriesMeta = series.map((s) => ({ metric: s.metric || {}, qi: s.qi ?? 0 })) // для тултипа
 
   await nextTick()
   const width = chartEl.value?.clientWidth || 900
@@ -580,38 +692,45 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
 
 <template>
   <div class="qe">
-    <!-- Шапка панели: номер запроса + кнопка «убрать» (только если панелей больше одной) -->
-    <div v-if="removable" class="panel-head">
-      <span class="panel-num">Запрос {{ index }}</span>
-      <button class="panel-x" title="Убрать запрос" @click="$emit('remove')">×</button>
-    </div>
-
     <div class="card">
-      <!-- Поле запроса + выпадающие подсказки. Префикс >_ — как в Prometheus. -->
-      <div class="editor">
-        <span class="prompt">&gt;_</span>
+      <!-- Поля запросов (одно или несколько) + выпадающие подсказки у активного.
+           Слева номер запроса (>_ — когда запрос один, как в Prometheus). -->
+      <div v-for="(q, i) in queries" :key="q.id" class="editor">
+        <span class="prompt" :class="{ chip: queries.length > 1 }">{{ queries.length > 1 ? 'q' + (i + 1) : '>_' }}</span>
         <textarea
-          ref="ta"
+          :ref="(el) => setTa(el, i)"
           class="input expr"
-          v-model="expr"
+          :class="{ 'has-x': queries.length > 1 }"
+          v-model="q.text"
           rows="1"
           spellcheck="false"
           placeholder="выражение (Shift+Enter — перенос строки)"
-          @input="onInput"
-          @focus="refreshSug"
-          @click="refreshSug"
-          @keydown="onKeydown"
+          @input="onInput(i)"
+          @focus="onFocus(i)"
+          @click="onFocus(i)"
+          @keydown="onKeydown(i, $event)"
           @blur="showSug = false"
         ></textarea>
-        <ul v-if="showSug" class="sug">
+        <!-- mousedown.prevent — чтобы клик по «×» не дёргал blur/фокус textarea -->
+        <button
+          v-if="queries.length > 1"
+          class="q-x"
+          title="Убрать запрос"
+          @mousedown.prevent
+          @click="removeQuery(i)"
+        >×</button>
+        <ul v-if="showSug && activeIdx === i" class="sug">
           <li
-            v-for="(s, i) in suggestions"
+            v-for="(s, j) in suggestions"
             :key="s"
-            :class="{ active: i === sugIndex }"
+            :class="{ active: j === sugIndex }"
             @mousedown.prevent="pick(s)"
           >{{ s }}</li>
         </ul>
       </div>
+
+      <!-- Ещё одно выражение на тот же график/таблицу — как Add Query в vmui. -->
+      <button class="add-q" @click="addQuery">+ Добавить запрос</button>
 
       <!-- Вкладки режима Table / Graph — подчёркиванием, как в Prometheus. -->
       <div class="qmodes">
@@ -629,7 +748,8 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
         </button>
       </div>
 
-      <!-- Панель времени: Graph — «От»/«До» + пресеты; Table — «Время расчёта». -->
+      <!-- Панель времени: Graph — «От»/«До» + пресеты; Table — «Время расчёта».
+           Общая на все запросы — они выполняются за один и тот же диапазон. -->
       <div class="timebar">
         <template v-if="mode === 'graph'">
           <label class="tfield">От <input type="datetime-local" class="input dt" v-model="fromStr" /></label>
@@ -653,7 +773,7 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
       </div>
     </div>
 
-    <div v-if="error" class="msg msg-err">{{ error }}</div>
+    <div v-for="(e, i) in errors" :key="i" class="msg msg-err">{{ e }}</div>
     <div v-if="truncated" class="trunc">{{ truncated }}</div>
 
     <!-- Graph: первая загрузка — скелет на месте графика; при повторном запросе
@@ -667,7 +787,8 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
       <div ref="chartEl" class="chart" :style="(chartSeries.length || loading) ? 'min-height:380px' : null"></div>
       <div v-if="!chartSeries.length && !loading" class="empty">Нет данных — выполни запрос.</div>
 
-      <!-- Легенда: найденные серии с цветом и полными лейблами -->
+      <!-- Легенда: найденные серии с цветом, полными лейблами и значением
+           (номер запроса — когда выражений несколько) -->
       <div v-if="chartSeries.length" class="legend">
         <button
           v-for="(s, i) in chartSeries"
@@ -677,13 +798,15 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
           @click="legendClick(i, $event)"
         >
           <span class="leg-dot" :style="{ background: s.color }"></span>
+          <span v-if="multiRun" class="leg-q">q{{ s.qi + 1 }}</span>
           <span class="leg-lab">{{ s.label }}</span>
           <span class="leg-val">{{ s.value }}</span>
         </button>
       </div>
     </div>
 
-    <!-- Table: столбец на каждый лейбл (как таблица в vmui). Первая загрузка —
+    <!-- Table: столбец на каждый лейбл (как таблица в vmui); при нескольких
+         запросах первая колонка — чей это результат (q1/q2). Первая загрузка —
          скелет-строки; при повторном запросе старая таблица остаётся, но пригашена. -->
     <div v-if="mode === 'table' && loading && !instant.length" class="card"><Skeleton :lines="6" :height="24" /></div>
     <div v-else-if="mode === 'table' && instant.length" class="card" :class="{ dim: loading }">
@@ -691,6 +814,7 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
         <table class="tbl">
           <thead>
             <tr>
+              <th v-if="multiRun" class="qn">#</th>
               <th v-if="hasMetricName" class="lbl">__name__</th>
               <th v-for="c in columns" :key="c" class="lbl">{{ c }}</th>
               <th class="val">value</th>
@@ -698,6 +822,7 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
           </thead>
           <tbody>
             <tr v-for="(row, i) in instant" :key="i">
+              <td v-if="multiRun" class="qn mono">q{{ row.qi + 1 }}</td>
               <td v-if="hasMetricName" class="ser">{{ row.metric.__name__ || '' }}</td>
               <td v-for="c in columns" :key="c" class="ser">{{ row.metric[c] ?? '' }}</td>
               <td class="val">{{ row.value }}</td>
@@ -708,7 +833,7 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
     </div>
     <div v-else-if="mode === 'table' && !loading" class="empty">Нет данных — выполни запрос.</div>
 
-    <!-- JSON: сырой ответ VM, как вкладка JSON в vmui. -->
+    <!-- JSON: сырой ответ VM (при нескольких запросах — массив {query, response}). -->
     <div v-if="mode === 'json' && loading && !rawJson" class="card"><Skeleton :lines="6" :height="24" /></div>
     <div v-else-if="mode === 'json' && rawJson" class="card" :class="{ dim: loading }">
       <pre class="json">{{ rawJson }}</pre>
@@ -718,20 +843,18 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
 </template>
 
 <style scoped>
-/* Шапка панели: номер запроса слева, кнопка «убрать» справа. */
-.panel-head { display: flex; align-items: center; margin-bottom: 8px; }
-.panel-num { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
-.panel-x {
-  margin-left: auto; background: transparent; border: 1px solid var(--border-soft);
-  color: var(--text-mute); width: 24px; height: 24px; border-radius: 6px;
-  font-size: 16px; line-height: 1; display: inline-flex; align-items: center; justify-content: center;
-}
-.panel-x:hover { color: var(--danger); border-color: var(--danger); }
-
 .editor { position: relative; }
+.editor + .editor { margin-top: 10px; }
 .prompt {
   position: absolute; left: 12px; top: 11px; z-index: 1;
   font-family: var(--mono); font-size: 14px; color: var(--text-mute); pointer-events: none;
+}
+/* Номер запроса (q1/q2) при нескольких полях — акцентный чип вместо голого текста. */
+.prompt.chip {
+  top: 9px; left: 9px;
+  font-size: 11px; font-weight: 600; line-height: 1;
+  color: var(--accent-bright); background: var(--accent-soft);
+  padding: 5px 7px; border-radius: 6px;
 }
 .expr {
   font-family: var(--mono); font-size: 14px; line-height: 1.5;
@@ -741,6 +864,25 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
      лишнего ползунка на пустом/коротком поле), auto — только на потолке EXPR_MAX_H. */
   resize: none; overflow-y: hidden;
 }
+/* Когда справа есть «×» — не даём тексту заехать под кнопку; слева место под чип. */
+.expr.has-x { padding-right: 38px; padding-left: 40px; }
+/* Убрать выражение (при нескольких) — «×» в правом углу поля. */
+.q-x {
+  position: absolute; right: 8px; top: 9px; z-index: 1;
+  background: transparent; border: 1px solid var(--border-soft);
+  color: var(--text-mute); width: 24px; height: 24px; border-radius: 6px;
+  font-size: 16px; line-height: 1; display: inline-flex; align-items: center; justify-content: center;
+}
+.q-x:hover { color: var(--danger); border-color: var(--danger); }
+
+/* «+ Добавить запрос» — под полями, как Add Query в vmui. */
+.add-q {
+  margin-top: 10px;
+  background: var(--panel-2); border: 1px dashed var(--border);
+  color: var(--text-dim); border-radius: 8px; padding: 7px 14px;
+  font-family: var(--mono); font-size: 12px;
+}
+.add-q:hover { border-color: var(--accent); color: var(--accent-bright); }
 
 /* Выпадашка подсказок под полем */
 /* Список подсказок — В ПОТОКЕ (не absolute): появляется под полем, гарантированно
@@ -748,7 +890,8 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
 .sug {
   margin: 6px 0 0; padding: 4px; list-style: none;
   max-height: 260px; overflow-y: auto;
-  background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: var(--shadow);
 }
 .sug li {
   padding: 7px 10px; border-radius: 6px; cursor: pointer;
@@ -757,7 +900,13 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
 }
 .sug li.active, .sug li:hover { background: var(--accent-soft); color: var(--accent-bright); }
 
-.trunc { font-size: 12px; color: #ffb86c; margin: 8px 2px 0; font-family: var(--mono); }
+/* Плашка «результат обрезан» — мягкий янтарный чип (читается в обеих темах). */
+.trunc {
+  display: inline-block; margin: 8px 0 0;
+  font-size: 12px; font-family: var(--mono); color: #e8a13c;
+  background: rgba(232, 161, 60, 0.12); border: 1px solid rgba(232, 161, 60, 0.35);
+  border-radius: 7px; padding: 6px 10px;
+}
 
 /* Вкладки режима Table / Graph — подчёркиванием, как в Prometheus. */
 .qmodes { display: flex; gap: 20px; margin-top: 14px; border-bottom: 1px solid var(--border-soft); }
@@ -800,11 +949,18 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
 .dim { opacity: 0.5; transition: opacity 0.15s; }
 
 /* Легенда под графиком — серии столбиком с цветом и полными лейблами */
-.legend { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-soft); display: flex; flex-direction: column; gap: 4px; }
-.leg { display: flex; align-items: center; gap: 9px; background: transparent; border: none; padding: 3px 4px; text-align: left; border-radius: 5px; }
+.legend { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-soft); display: flex; flex-direction: column; gap: 2px; }
+.leg { display: flex; align-items: center; gap: 9px; background: transparent; border: none; padding: 5px 8px; text-align: left; border-radius: 7px; }
 .leg:hover { background: var(--panel-2); }
 .leg.off { opacity: 0.4; }
-.leg-dot { flex: none; width: 11px; height: 11px; border-radius: 3px; }
+/* Цвет серии — «таблетка»-линия, как штрих на графике (виднее квадратика). */
+.leg-dot { flex: none; width: 14px; height: 5px; border-radius: 3px; }
+/* Номер запроса у серии (q1/q2) — когда выражений несколько. */
+.leg-q {
+  flex: none; font-family: var(--mono); font-size: 10px; font-weight: 600;
+  color: var(--accent-bright); background: var(--accent-soft);
+  border-radius: 5px; padding: 2px 6px;
+}
 /* Имя и значение серии в легенде можно выделить и скопировать (легенда — <button>,
    а у кнопок текст по умолчанию не выделяется; клик-переключение серии при этом
    не срабатывает, если что-то выделено — см. legendClick). */
@@ -815,24 +971,32 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
 
 .tbl-scroll { overflow-x: auto; }
 .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
-.tbl th { text-align: left; color: var(--text-mute); font-weight: 600; padding: 7px 8px; border-bottom: 1px solid var(--border-soft); white-space: nowrap; }
-.tbl td { padding: 7px 8px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+.tbl th { text-align: left; color: var(--text-mute); font-weight: 600; padding: 8px; border-bottom: 1px solid var(--border-soft); white-space: nowrap; }
+.tbl td { padding: 8px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+/* Строка под курсором подсвечивается — легче вести взгляд по широкой таблице.
+   Полупрозрачный серый одинаково спокойно работает в обеих темах. */
+.tbl tbody tr:hover td { background: rgba(127, 127, 127, 0.07); }
 /* Заголовок-лейбл моноширинным — так столбцы читаются как имена лейблов в vmui. */
 .tbl th.lbl { font-family: var(--mono); font-weight: 600; color: var(--accent-bright); }
+/* Номер запроса (q1/q2) в таблице — приглушённо, узкой колонкой. */
+.tbl th.qn, .tbl td.qn { color: var(--text-mute); white-space: nowrap; width: 1%; }
 /* Много лейблов = много колонок: держим значения в одну строку и скроллим таблицу
    вбок (tbl-scroll), а не ломаем ячейки по буквам в высоченные столбики. */
 .tbl .ser { font-family: var(--mono); color: var(--text-dim); white-space: nowrap; }
 .tbl .val { font-family: var(--mono); text-align: right; white-space: nowrap; }
 /* Значения таблицы можно выделять и копировать (метрику, лейблы). */
 .tbl td { user-select: text; }
+.mono { font-family: var(--mono); }
 
-/* JSON-режим — сырой ответ VM с горизонтальной прокруткой; текст выделяем/копируем. */
+/* JSON-режим — сырой ответ VM с горизонтальной прокруткой; текст выделяем/копируем.
+   Слегка утоплен (panel-2) — читается как «код», а не как обычный текст. */
 .json {
-  margin: 0; padding: 4px 2px; max-height: 520px; overflow: auto;
+  margin: 0; padding: 12px 14px; max-height: 520px; overflow: auto;
+  background: var(--panel-2); border-radius: 8px;
   font-family: var(--mono); font-size: 12px; line-height: 1.5; color: var(--text-dim);
   white-space: pre; word-break: normal; user-select: text;
 }
-.empty { color: var(--text-mute); font-size: 13px; padding: 16px 2px; }
+.empty { color: var(--text-mute); font-size: 13px; padding: 28px 2px; text-align: center; }
 </style>
 
 <!-- Не scoped: тултип графика создаётся из JS внутри uPlot (scoped-стили до него
@@ -845,10 +1009,14 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
   font-family: var(--mono); font-size: 12px; color: var(--text);
 }
-/* Шапка — цветная точка серии + имя метрики (жирным). */
+/* Шапка — цветная точка серии + имя метрики (жирным) + номер запроса. */
 .qe-tip-h { display: flex; align-items: flex-start; gap: 7px; line-height: 1.35; }
 .qe-tip-dot { flex: none; width: 9px; height: 9px; border-radius: 2px; margin-top: 3px; }
 .qe-tip-name { font-weight: 700; word-break: break-all; }
+.qe-tip-qn {
+  flex: none; margin-left: auto; color: var(--text-mute); font-size: 10px;
+  border: 1px solid var(--border-soft); border-radius: 4px; padding: 0 4px;
+}
 /* Лейблы — по строке на каждый, key приглушён, value ярче; отступ и линия слева. */
 .qe-tip-labels { margin: 7px 0 0; padding: 6px 0 2px 16px; border-top: 1px solid var(--border-soft); display: flex; flex-direction: column; gap: 3px; }
 .qe-tip-row { display: flex; gap: 6px; line-height: 1.3; word-break: break-all; }
