@@ -241,6 +241,26 @@ class DiskUsageByGroup(unittest.TestCase):
         self.assertEqual(rows[0]["group"], "")
         self.assertEqual(rows[0]["total"], 200.0)
 
+    def test_non_finite_values_are_json_safe(self):
+        """VM отдаёт "+Inf"/"NaN" (у ETA — деление на нулевой рост) — строки должны
+        сериализоваться. FastAPI кодирует ответ с allow_nan=False, поэтому inf/nan
+        в теле роняли /victoria/disk-usage в 500 уже после хендлера."""
+        vec = self._vec
+
+        async def fake_query(env, expr, time=None, tenant=None):
+            if "[10m:]" in expr:                      # рост нулевой → VM вернул +Inf
+                return vec([("main", "+Inf"), ("cold", "NaN")])
+            if "vm_data_size_bytes" in expr:
+                return vec([("main", "600"), ("cold", "200")])
+            return vec([("main", "400"), ("cold", "800")])
+        vdisk.client.query = fake_query
+
+        rows = asyncio.run(vdisk._one("x"))
+        self.assertIsNone(rows[0]["eta_days"])        # NaN  → «—» на фронте
+        self.assertIsNone(rows[1]["eta_days"])        # +Inf → «—» на фронте
+        # Главное: ответ роута кодируется так же, как это делает FastAPI.
+        json.dumps(rows, allow_nan=False)
+
 
 class ShortLinks(unittest.TestCase):
     """/share и /s/<id>: сохранить путь, получить редирект; защита от open redirect."""

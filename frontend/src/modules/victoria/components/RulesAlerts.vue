@@ -117,7 +117,9 @@ function toggle(k) { openKey.value = openKey.value === k ? null : k }
           <span class="dot" :class="dotClass(r)"></span>
           <div class="rule-info">
             <div class="rule-head">
-              <span class="nm">{{ r.name }}</span>
+              <!-- title: имя схлопывается в многоточие уже на ~760px, а в раскрытии
+                   его нет (там expr/labels/health) — без подсказки не прочитать. -->
+              <span class="nm" :title="r.name">{{ r.name }}</span>
               <span class="state" :class="dotClass(r)">{{ badge(r) }}</span>
               <span v-if="r.duration" class="for">for {{ fmtFor(r.duration) }}</span>
               <span v-if="r.health && r.health !== 'ok'" class="mark err">{{ r.health }}</span>

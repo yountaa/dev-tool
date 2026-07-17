@@ -128,7 +128,7 @@ function setAll(open) {
           <tbody>
             <tr v-for="(t, i) in g.targets" :key="i">
               <td><span class="dot" :class="t.health === 'up' ? 'ok' : 'bad'"></span></td>
-              <td class="mono">{{ instance(t) }}</td>
+              <td class="mono inst">{{ instance(t) }}</td>
               <td class="mono url">{{ t.scrapeUrl }}</td>
               <td class="mono lbl">{{ labelsStr(t.labels) }}</td>
               <td class="err">{{ t.lastError }}</td>
@@ -167,9 +167,17 @@ function setAll(open) {
 .tbl th { text-align: left; color: var(--text-mute); font-weight: 600; padding: 7px 12px; border-top: 1px solid var(--border-soft); background: var(--panel-2); }
 .tbl td { padding: 7px 12px; border-top: 1px solid var(--border-soft); vertical-align: top; }
 .mono { font-family: var(--mono); }
+/* Имя цели не переносим: авто-раскладка таблицы делит ширину пропорционально
+   содержимому, и длинная lastError раздувала колонку «Ошибка» (567 из 1180px),
+   ломая имя на 2–3 строки, — по такой лесенке цель было не опознать. nowrap
+   заставляет отдать имени его полную ширину; очень длинное имя уводит таблицу в
+   горизонтальный скролл tbl-scroll, что честнее нечитаемой лесенки. */
+.inst { white-space: nowrap; }
 .url { color: var(--text-dim); word-break: break-all; }
 .lbl { color: var(--text-mute); font-size: 12px; word-break: break-word; max-width: 320px; }
-.err { color: var(--danger); font-family: var(--mono); font-size: 12px; word-break: break-word; }
+/* max-width — не столько предел ширины, сколько предел «жадности» колонки при
+   дележе: без него ошибка забирала место у Instance/Endpoint (как у .lbl выше). */
+.err { color: var(--danger); font-family: var(--mono); font-size: 12px; word-break: break-word; max-width: 340px; }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
 .dot.ok { background: #50fa7b; }
 .dot.bad { background: var(--danger); }

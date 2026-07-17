@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 
 from . import client, config
 
@@ -64,6 +65,11 @@ def _by_group(raw: bytes) -> dict:
         try:
             v = float(value[1])
         except (TypeError, ValueError):
+            continue
+        # VM штатно отдаёт "+Inf"/"NaN" (у ETA — деление на нулевой рост), а JSON
+        # их не принимает: FastAPI сериализует ответ с allow_nan=False и роняет
+        # весь роут в 500 уже ПОСЛЕ хендлера. Пропускаем — на фронте будет «—».
+        if not math.isfinite(v):
             continue
         out[(item.get("metric") or {}).get("group", "")] = v
     return out

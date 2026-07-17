@@ -6,6 +6,8 @@
 // строку НА КАЖДУЮ группу: занято/свободно/прогноз заполнения (по тем же
 // запросам sum by(group) + предиктивный ETA, что и раньше, но без сворачивания
 // кластера в одно число).
+// Сам кластер в таблице не показываем — подпись строки только группа; имя кластера
+// из ответа используем лишь в строке ошибки и в ключе строки.
 import { ref, onMounted } from 'vue'
 import Skeleton from '../../../shared/Skeleton.vue'
 import { victoriaApi } from '../api.js'
@@ -70,7 +72,6 @@ function fmtEta(days) {
       <table class="tbl">
         <thead>
           <tr>
-            <th class="l">Кластер</th>
             <th class="l">Группа</th>
             <th class="r">Занято</th>
             <th class="r">Свободно</th>
@@ -80,16 +81,11 @@ function fmtEta(days) {
           </tr>
         </thead>
         <tbody>
-          <!-- Имя кластера пишем один раз на блок его групп; граница между
-               кластерами чуть заметнее (cluster-start), внутри блока — мягкая. -->
-          <tr
-            v-for="(r, i) in rows"
-            :key="r.env + '|' + (r.group ?? '')"
-            :class="{ 'cluster-start': i > 0 && rows[i - 1].env !== r.env }"
-          >
-            <td class="l mono envcell">{{ i === 0 || rows[i - 1].env !== r.env ? r.env : '' }}</td>
+          <tr v-for="r in rows" :key="r.env + '|' + (r.group ?? '')">
+            <!-- Кластер в таблице не показываем (строки — только по группам), но в
+                 строке ошибки он нужен: иначе непонятно, какой кластер не ответил. -->
             <template v-if="r.error">
-              <td class="err" colspan="6">{{ r.error }}</td>
+              <td class="err" colspan="6">{{ r.env }}: {{ r.error }}</td>
             </template>
             <template v-else>
               <!-- Метрики без лейбла group (обычный Prometheus) — группа «—» -->
@@ -124,8 +120,11 @@ function fmtEta(days) {
 /* На узком окне таблица скроллится внутри себя, а не обрезается/распирает страницу. */
 .tbl-scroll { overflow-x: auto; }
 /* Не растягиваем на всю ширину рабочей области — иначе колонок мало, они широкие,
-   и заголовок отъезжает далеко от своих чисел. */
-.tbl { width: 100%; max-width: 1120px; min-width: 620px; border-collapse: collapse; font-size: 13px; }
+   и заголовок отъезжает далеко от своих чисел. max-width подрезан с 1120 под 6
+   столбцов (без «Кластера»). min-width тут не нужен: таблица и так не сжимается
+   уже своего содержимого (~610px даже на коротких именах групп) — на узком окне
+   её подхватывает горизонтальный скролл tbl-scroll. */
+.tbl { width: 100%; max-width: 1000px; border-collapse: collapse; font-size: 13px; }
 .tbl th { color: var(--text-mute); font-weight: 600; padding: 9px 10px; border-bottom: 1px solid var(--border-soft); }
 .tbl td { padding: 11px 10px; border-bottom: 1px solid var(--border-soft); }
 .tbl tr:last-child td { border-bottom: none; }
@@ -135,11 +134,10 @@ function fmtEta(days) {
 .tbl th.l, .tbl td.l { text-align: left; }
 .tbl th.r, .tbl td.r { text-align: right; white-space: nowrap; }
 .mono { font-family: var(--mono); }
-/* Имя кластера — раз на блок групп, полужирно; граница между кластерами заметнее. */
-.envcell { font-weight: 600; }
-.cluster-start td { border-top: 1px solid var(--border); }
-/* Группа vmstorage — приглушённо, чтобы взгляд цеплялся сначала за кластер. */
-.grp { color: var(--text-dim); white-space: nowrap; }
+/* Группа vmstorage — теперь единственная подпись строки, поэтому полным цветом и
+   полужирно (раньше была приглушена в пользу колонки «Кластер»). Длинное имя не
+   переносим — вместо этого таблица уезжает в горизонтальный скролл. */
+.grp { font-weight: 600; white-space: nowrap; }
 .err { color: var(--danger); font-family: var(--mono); font-size: 12px; }
 /* ETA (Заполнится): цвет по срочности — спокойные тона, читаются в обеих темах. */
 .eta.ok { color: #3fae72; }
