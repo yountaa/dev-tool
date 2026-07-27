@@ -2,7 +2,7 @@
 // Правила из vmalert (/api/v1/rules) — «как в silence-моде»: каждое правило можно
 // РАСКРЫТЬ кликом и посмотреть состав (expr, labels, annotations, health) и активные
 // алерты (rule.alerts — сработавшие серии). Только просмотр.
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import Skeleton from '../../../shared/Skeleton.vue'
 import { fmtDt } from '../../../shared/time.js'
 import { victoriaApi } from '../api.js'
@@ -12,9 +12,15 @@ const props = defineProps({ env: { type: String, required: true } })
 const groups = ref([]) // data.groups
 const search = ref('')
 const stateFilter = ref('all')
-const openKey = ref(null)
+// Ручной выбор пользователя по правилам: { [key]: true|false }. Пока правила тут
+// нет — действует автоматика (поиск раскрывает найденное). Клик решает всегда,
+// поэтому лишнее раскрытие можно закрыть, не стирая поиск.
+const openKeys = ref({})
 const loading = ref(true)
 const error = ref(null)
+// Сколько найденных правил раскрываем разом: на большом vmalert (тысячи правил)
+// раскрыть все — это тысячи блоков с алертами в DOM, вкладка встанет колом.
+const AUTO_OPEN_MAX = 50
 
 const STATES = [
   ['all', 'all'], ['firing', 'firing'], ['pending', 'pending'],
@@ -29,7 +35,16 @@ async function load(refresh = false) {
   error.value = null
   try {
     const r = await victoriaApi.rules(props.env, refresh)
-    groups.value = r.data?.groups || []
+    const gs = r.data?.groups || []
+    // Строку для поиска считаем ОДИН раз при загрузке (как в Targets): в неё входят
+    // имя, выражение, лейблы и аннотации — по имени лейбла правило тоже находится.
+    for (const g of gs) {
+      for (const rule of g.rules || []) {
+        rule._hay = ((rule.name || '') + ' ' + (rule.query || '') + ' ' +
+          JSON.stringify(rule.labels || {}) + ' ' + JSON.stringify(rule.annotations || {})).toLowerCase()
+      }
+    }
+    groups.value = gs
   } catch (e) {
     error.value = e.message
   } finally {
@@ -50,8 +65,8 @@ const stats = computed(() => {
 
 function ruleMatches(r) {
   if (search.value) {
-    const hay = ((r.name || '') + ' ' + (r.query || '')).toLowerCase()
-    if (!hay.includes(search.value.toLowerCase())) return false
+    const hay = r._hay || ((r.name || '') + ' ' + (r.query || '')).toLowerCase()
+    if (!hay.includes(search.value.trim().toLowerCase())) return false
   }
   if (stateFilter.value === 'all') return true
   if (stateFilter.value === 'recording') return r.type === 'recording'
@@ -64,6 +79,12 @@ const filtered = computed(() =>
     .map((g) => ({ ...g, rules: (g.rules || []).filter(ruleMatches) }))
     .filter((g) => g.rules.length),
 )
+
+// Сколько правил показано сейчас (для авто-раскрытия при поиске).
+const shownCount = computed(() => filtered.value.reduce((n, g) => n + g.rules.length, 0))
+// При поиске найденные правила раскрыты сразу (не надо тыкать каждое), но только
+// пока их немного — иначе вкладка захлебнётся на большом vmalert.
+const autoOpen = computed(() => !!search.value.trim() && shownCount.value <= AUTO_OPEN_MAX)
 
 function dotClass(r) {
   if (r.type === 'recording') return 'rec'
@@ -80,8 +101,23 @@ function fmtFor(s) {
 function labelsStr(labels) {
   return Object.entries(labels || {}).map(([k, v]) => `${k}="${v}"`).join('  ')
 }
-function keyOf(gi, ri) { return gi + '-' + ri }
-function toggle(k) { openKey.value = openKey.value === k ? null : k }
+// Ключ правила — по именам, а не по индексам: фильтр/обновление данных двигают
+// индексы, и раскрытым оказывалось «соседнее» правило.
+function keyOf(g, r) { return (g.name || '') + '|' + (r.name || '') + '|' + (r.query || '') }
+// Правило раскрыто: решает клик по нему (если был), иначе автоматика поиска.
+function isOpen(k) {
+  const manual = openKeys.value[k]
+  return manual !== undefined ? manual : autoOpen.value
+}
+// Клик всегда переключает ТЕКУЩЕЕ состояние — в т.ч. закрывает авто-раскрытое.
+function toggle(k) { openKeys.value = { ...openKeys.value, [k]: !isOpen(k) } }
+function setAll(open) {
+  const c = {}
+  for (const g of filtered.value) for (const r of g.rules) c[keyOf(g, r)] = open
+  openKeys.value = c
+}
+// Новый поиск/фильтр — забываем ручные закрытия: пользователь ищет заново.
+watch([search, stateFilter], () => { openKeys.value = {} })
 </script>
 
 <template>
@@ -92,7 +128,9 @@ function toggle(k) { openKey.value = openKey.value === k ? null : k }
       <div class="pills">
         <button v-for="[id, label] in STATES" :key="id" class="pill" :class="{ on: stateFilter === id }" @click="stateFilter = id">{{ label }}</button>
       </div>
-      <input class="input search" v-model="search" placeholder="поиск по имени / выражению…" />
+      <input class="input search" v-model="search" placeholder="поиск: имя / выражение / лейбл…" />
+      <button class="btn btn-sm" @click="setAll(true)">развернуть всё</button>
+      <button class="btn btn-sm" @click="setAll(false)">свернуть всё</button>
       <span class="counts">
         <span class="firing" :class="{ zero: !stats.firing }">firing {{ stats.firing }}</span>
         <span class="pending" :class="{ zero: !stats.pending }">pending {{ stats.pending }}</span>
@@ -112,8 +150,8 @@ function toggle(k) { openKey.value = openKey.value === k ? null : k }
       </div>
 
       <!-- Правила — раскрываемые строки -->
-      <div v-for="(r, ri) in g.rules" :key="ri" class="rule" :class="{ open: openKey === keyOf(gi, ri) }">
-        <div class="rule-row" @click="toggle(keyOf(gi, ri))">
+      <div v-for="(r, ri) in g.rules" :key="ri" class="rule" :class="{ open: isOpen(keyOf(g, r)) }">
+        <div class="rule-row" @click="toggle(keyOf(g, r))">
           <span class="dot" :class="dotClass(r)"></span>
           <div class="rule-info">
             <div class="rule-head">
@@ -132,7 +170,7 @@ function toggle(k) { openKey.value = openKey.value === k ? null : k }
         </div>
 
         <!-- Раскрытие: expr, лейблы, аннотации, служебное; ниже активные алерты. -->
-        <div v-if="openKey === keyOf(gi, ri)" class="detail">
+        <div v-if="isOpen(keyOf(g, r))" class="detail">
           <div class="kv-grid">
             <span class="k">expr</span>
             <span class="v">{{ r.query }}</span>

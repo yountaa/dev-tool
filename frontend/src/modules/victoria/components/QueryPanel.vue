@@ -7,6 +7,33 @@ const namesCache = new Map() // 'env|tenant' -> { at, names }
 const labelNamesCache = new Map()  // 'env|tenant' -> { at, names } — имена лейблов
 const labelValuesCache = new Map() // 'env|tenant|label' -> { at, values } — значения лейбла
 const NAMES_TTL = 5 * 60 * 1000
+
+// История выполненных запусков, свежие сверху. Запись — это ВЕСЬ запуск целиком:
+// { q: [выражение q1, выражение q2, …] }, а не отдельное выражение. Иначе откат
+// из истории восстанавливал одно поле, а соседние оставались от прошлого запуска.
+// Общая на все кластеры (запрос обычно переносят с кластера на кластер) и живёт
+// в localStorage — переживает перезагрузку страницы.
+const HISTORY_KEY = 'vm.qhistory'
+const HISTORY_MAX = 10
+function readHistory() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]')
+    if (!Array.isArray(raw)) return []
+    const out = []
+    for (const item of raw) {
+      // строка — старый формат (одно выражение), объект — новый (запуск целиком)
+      const q = typeof item === 'string' ? [item] : (Array.isArray(item && item.q) ? item.q : [])
+      const clean = q.filter((s) => typeof s === 'string' && s.trim())
+      if (clean.length) out.push({ q: clean })
+    }
+    return out.slice(0, HISTORY_MAX)
+  } catch (e) {
+    return [] // мусор в localStorage не должен ронять панель
+  }
+}
+function writeHistory(list) {
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(list)) } catch (e) { /* приват-режим */ }
+}
 </script>
 
 <script setup>
@@ -33,6 +60,7 @@ const props = defineProps({
 const MAX_TABLE_ROWS = 1000  // строк в таблице (instant), суммарно по всем запросам
 const MAX_SERIES = 20        // линий на графике (range), суммарно по всем запросам
 const MAX_METRICS = 10000    // имён метрик в автокомплите
+const CHART_H = 380          // высота графика (её же резервирует место под canvas)
 
 // --- Запросы: несколько выражений в одной панели -------------------------------
 let qseq = 0
@@ -102,10 +130,43 @@ if (init.get('env') === props.env && (init.get('tenant') || null) === (props.ten
 const loading = ref(false)
 const errors = ref([]) // ошибки по запросам («Запрос N: …», когда запросов несколько)
 const meta = ref('') // строка-сводка под запросом (серий, время расчёта)
-const truncated = ref('') // предупреждение об обрезке результата
 
-const instant = ref([]) // [{ qi, metric, value }] для режима Table (уже обрезано до MAX_TABLE_ROWS)
+const allRows = ref([])  // ВСЕ строки последнего instant-запуска (до среза)
+const rowsShown = ref(MAX_TABLE_ROWS) // сколько строк показываем сейчас («Показать ещё»)
+const instant = computed(() => allRows.value.slice(0, rowsShown.value)) // видимая часть таблицы
 const rawJson = ref('')  // сырой JSON ответа VM для режима JSON (как вкладка JSON в vmui)
+
+// --- История запусков ---------------------------------------------------------
+// Выпадающий список под полями (кнопка «История»). Одна строка = один запуск со
+// ВСЕМИ его выражениями; клик восстанавливает поля ровно как было и выполняет.
+const history = ref(readHistory())
+const histOpen = ref(false)
+function remember(exprs) {
+  const key = JSON.stringify(exprs)
+  // Тот же набор выражений не плодим — поднимаем запись наверх.
+  const list = history.value.filter((h) => JSON.stringify(h.q) !== key)
+  list.unshift({ q: exprs })
+  history.value = list.slice(0, HISTORY_MAX)
+  writeHistory(history.value)
+}
+// Откат к запуску: ПОЛНОСТЬЮ заменяем набор полей (было 2 запроса, откатили на
+// один — второе поле исчезает) и сразу выполняем — как «вернуться к тому виду».
+function useHistory(entry) {
+  queries.value = entry.q.map((text) => ({ id: ++qseq, text }))
+  tas.value = []              // ссылки на textarea пересоберутся при отрисовке
+  activeIdx.value = 0
+  showSug.value = false
+  histOpen.value = false
+  nextTick(() => {
+    autosizeAll()
+    if (!loading.value) run()
+  })
+}
+function clearHistory() {
+  history.value = []
+  histOpen.value = false
+  writeHistory([])
+}
 
 // Колонки таблицы = объединение имён лейблов по всем сериям (как таблица в vmui:
 // каждый лейбл — отдельный столбец). __name__ показываем отдельной первой колонкой.
@@ -119,6 +180,82 @@ const columns = computed(() => {
   }
   return [...keys].sort()
 })
+
+// --- Ширина колонок таблицы (тянем мышью за правый край заголовка) -------------
+// { [колонка]: ширина в px }. Колонки без записи ведёт браузер, как раньше.
+// Ключи: '__name__', имя лейбла, 'value' (номер запроса не тянем — он узкий).
+const colW = ref({})
+let resizing = null // { key, startX, startW } — пока тянут мышью
+function colStyle(key) {
+  const w = colW.value[key]
+  // min и max вместе с width: иначе авто-раскладка таблицы всё равно раздувает
+  // колонку под самое длинное значение (значения у нас в одну строку, nowrap).
+  return w ? { width: w + 'px', minWidth: w + 'px', maxWidth: w + 'px' } : null
+}
+function startResize(key, e) {
+  const th = e.target.closest('th')
+  resizing = { key, startX: e.clientX, startW: colW.value[key] || (th ? th.offsetWidth : 120) }
+  window.addEventListener('mousemove', onResizeMove)
+  window.addEventListener('mouseup', stopResize)
+  e.preventDefault()  // не начинаем выделение текста заголовка
+  e.stopPropagation()
+}
+function onResizeMove(e) {
+  if (!resizing) return
+  const w = Math.max(48, resizing.startW + (e.clientX - resizing.startX))
+  colW.value = { ...colW.value, [resizing.key]: w }
+}
+function stopResize() {
+  resizing = null
+  window.removeEventListener('mousemove', onResizeMove)
+  window.removeEventListener('mouseup', stopResize)
+}
+// Двойной клик по разделителю — вернуть колонке автоматическую ширину.
+function resetCol(key) {
+  const c = { ...colW.value }
+  delete c[key]
+  colW.value = c
+}
+function resetCols() { colW.value = {} }
+
+// --- Горизонтальная прокрутка таблицы ------------------------------------------
+// Таблица показывается целиком (высоту не режем, страница листается как в vmui),
+// а родной горизонтальный ползунок таблицы спрятан — вместо него ОДИН ползунок,
+// прилипший к нижнему краю ЭКРАНА: он всегда на виду, куда бы ты ни долистал.
+// Прокрутка общая: тянем ползунок — едет таблица, крутим таблицу — едет ползунок.
+const scrollerEl = ref(null)
+const xbarEl = ref(null)
+const tblW = ref(0)     // ширина содержимого таблицы
+const viewW = ref(0)    // ширина видимой области — ползунок нужен, только если уже
+let syncing = false     // защита от «эха»: синхронизация в обе стороны
+// Пересчёт «в долях»: у полос разный запас хода (у таблицы вертикальный ползунок
+// съедает ширину), поэтому копировать scrollLeft один-в-один нельзя — правый край
+// не сходился бы.
+function part(el) {
+  const max = el.scrollWidth - el.clientWidth
+  return max > 0 ? el.scrollLeft / max : 0
+}
+function setPart(el, k) {
+  el.scrollLeft = (el.scrollWidth - el.clientWidth) * k
+}
+function syncFromTable() {
+  if (syncing || !xbarEl.value || !scrollerEl.value) return
+  syncing = true
+  setPart(xbarEl.value, part(scrollerEl.value))
+  syncing = false
+}
+function syncFromBar() {
+  if (syncing || !xbarEl.value || !scrollerEl.value) return
+  syncing = true
+  setPart(scrollerEl.value, part(xbarEl.value))
+  syncing = false
+}
+function measureTable() {
+  const el = scrollerEl.value
+  tblW.value = el ? el.scrollWidth : 0
+  viewW.value = el ? el.clientWidth : 0
+}
+const needXbar = computed(() => tblW.value > viewW.value + 1)
 
 // --- Автодополнение ----------------------------------------------------------
 const metricNames = ref([]) // имена метрик (__name__)
@@ -160,10 +297,22 @@ const COLORS = ['#ff7a59', '#56b8e6', '#6fcb85', '#f0b653', '#a98ff0', '#ef6f9d'
 
 const chartEl = ref(null)
 const chartSeries = ref([]) // [{ qi, label, color, value, show }] — легенда под графиком
+const allSeries = ref([])   // ВСЕ серии последнего range-запуска (до среза)
+const seriesShown = ref(MAX_SERIES) // сколько серий на графике сейчас («Показать ещё»)
 let chart = null
 let ro = null
 let inflight = null // AbortController текущего запуска (общий на все запросы; «Отмена»)
 let seriesMeta = [] // [{ metric, qi }] серий графика (для аккуратного тултипа по наведению)
+
+// Смена размера окна: пересчитываем ползунок таблицы И ширину графика. Ширину
+// графика ведёт ResizeObserver (см. drawChart), но полагаться только на него
+// нельзя — в некоторых окружениях (скрытая вкладка, фоновое окно) его колбэк не
+// приходит, и canvas остаётся шириной от прошлого размера окна, распирая
+// страницу вбок. Обработчик вешается в onMounted, снимается в onBeforeUnmount.
+function onWindowResize() {
+  measureTable()
+  if (chart && chartEl.value) chart.setSize({ width: chartEl.value.clientWidth, height: CHART_H })
+}
 
 let metricsTried = false
 async function loadMetrics() {
@@ -213,7 +362,12 @@ onMounted(() => {
   loadMetrics()
   nextTick(autosizeAll)
   if (hasExpr.value) run() // выражения пришли из ссылки — сразу показываем результат
+  window.addEventListener('resize', onWindowResize)
 })
+
+// Ширина таблицы меняется от данных, набора колонок и ручного ресайза — после
+// каждой такой правки пересчитываем верхний ползунок.
+watch([instant, columns, colW, mode], () => nextTick(measureTable))
 
 // Поле запроса растёт под содержимое: сбрасываем высоту и подгоняем под scrollHeight
 // (с потолком — дальше внутренняя прокрутка, чтобы огромный запрос не занял экран).
@@ -250,6 +404,8 @@ onBeforeUnmount(() => {
   if (inflight) inflight.abort()
   if (ro) ro.disconnect()
   if (chart) chart.destroy()
+  stopResize() // если ушли со вкладки прямо во время перетаскивания колонки
+  window.removeEventListener('resize', onWindowResize)
 })
 
 // Токен под курсором (последовательность из букв/цифр/_/:) — то, что дополняем.
@@ -440,8 +596,8 @@ async function run() {
   loading.value = true
   errors.value = []
   meta.value = ''
-  truncated.value = ''
   multiRun.value = items.length > 1
+  remember(items.map((x) => x.expr)) // в историю — то, что реально выполняли
   const t0 = performance.now()
   try {
     // Graph — range-запросы; Table и JSON — instant (мгновенное значение).
@@ -479,6 +635,7 @@ async function settle(items, promises) {
 
 async function runInstant(items, signal) {
   destroyChart()
+  allSeries.value = [] // график в этом режиме не рисуем — и «Показать ещё» под ним не нужен
   const time = fromLocalInput(evalStr.value)
   const ok = await settle(items, items.map(({ expr }) =>
     victoriaApi.query(props.env, expr, time, props.tenant, signal)))
@@ -501,13 +658,15 @@ async function runInstant(items, signal) {
       }
     }
   }
-  instant.value = rows.slice(0, MAX_TABLE_ROWS)
-  if (rows.length > MAX_TABLE_ROWS) truncated.value = `показаны первые ${MAX_TABLE_ROWS} из ${rows.length} серий`
+  // Показываем первую порцию, остальное — по кнопке «Показать ещё» (тысячи строк
+  // разом кладут DOM, а данные уже у нас — второй запрос не нужен).
+  allRows.value = rows
+  rowsShown.value = MAX_TABLE_ROWS
   return rows.length
 }
 
 async function runRange(items, signal) {
-  instant.value = []
+  allRows.value = []
   const end = fromLocalInput(toStr.value) ?? nowSec()
   const start = fromLocalInput(fromStr.value) ?? (end - 3600)
   if (start >= end) throw new Error('«От» должно быть раньше «До»')
@@ -519,10 +678,22 @@ async function runRange(items, signal) {
   for (const { qi, r } of ok) {
     for (const s of r.data?.result || []) merged.push({ qi, metric: s.metric || {}, values: s.values || [] })
   }
-  await drawChart(merged.slice(0, MAX_SERIES))
-  if (merged.length > MAX_SERIES) truncated.value = `на графике первые ${MAX_SERIES} из ${merged.length} серий`
+  // Рисуем первую порцию; остальные серии добавляет кнопка «Показать ещё» под
+  // легендой — данные уже пришли, перезапрашивать VM не нужно.
+  allSeries.value = merged
+  seriesShown.value = MAX_SERIES
+  await drawChart(merged.slice(0, seriesShown.value))
   return merged.length
 }
+
+// «Показать ещё» под графиком: дорисовываем следующие MAX_SERIES серий из уже
+// полученного ответа. Сколько показано — видно по длине легенды.
+async function showMoreSeries() {
+  seriesShown.value += MAX_SERIES
+  await drawChart(allSeries.value.slice(0, seriesShown.value))
+}
+// «Показать ещё» под таблицей: следующая порция строк того же ответа.
+function showMoreRows() { rowsShown.value += MAX_TABLE_ROWS }
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
@@ -530,9 +701,42 @@ function escapeHtml(s) {
 
 // Плагин-тултип: вместо гигантской легенды показываем по наведению ближайшую к
 // курсору серию — цвет, ПОЛНОЕ имя с лейблами, значение и время (+ номер запроса,
-// когда запросов несколько).
+// когда запросов несколько). КЛИК по графику закрепляет окошко на месте (как в
+// vmui): оно перестаёт бегать за курсором, текст лейблов можно выделить и
+// скопировать. Снять — крестик, повторный клик по графику или Escape.
 function tooltipPlugin() {
   let tip
+  let pinned = false
+  let downX = 0, downY = 0 // точка нажатия — отличаем клик от протяжки-выделения
+  let onKey
+
+  function unpin() {
+    pinned = false
+    if (tip) { tip.classList.remove('pinned'); tip.style.display = 'none' }
+  }
+  // Копирование лейблов кнопкой: текст готовим при отрисовке (tip.dataset.copy).
+  function copyLabels() {
+    const text = tip?.dataset.copy || ''
+    if (!text) return
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).catch(() => fallbackCopy(text))
+    } else {
+      fallbackCopy(text)
+    }
+    const btn = tip.querySelector('.qe-tip-copy')
+    if (btn) { btn.classList.add('done'); setTimeout(() => btn.classList.remove('done'), 900) }
+  }
+  // Без разрешения на буфер (или по http) — старый способ через скрытое поле.
+  function fallbackCopy(text) {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0'
+    document.body.appendChild(ta)
+    ta.select()
+    try { document.execCommand('copy') } catch (e) { /* совсем никак — пусть копируют руками */ }
+    document.body.removeChild(ta)
+  }
+
   return {
     hooks: {
       init(u) {
@@ -540,8 +744,33 @@ function tooltipPlugin() {
         tip.className = 'qe-tip'
         tip.style.display = 'none'
         u.over.appendChild(tip)
+
+        u.over.addEventListener('mousedown', (e) => { downX = e.clientX; downY = e.clientY })
+        u.over.addEventListener('click', (e) => {
+          // Протяжка (выбор диапазона) кликом не считается.
+          if (Math.abs(e.clientX - downX) > 4 || Math.abs(e.clientY - downY) > 4) return
+          if (pinned) { unpin(); return }
+          if (tip.style.display === 'none') return // курсор не над серией — нечего закреплять
+          pinned = true
+          tip.classList.add('pinned')
+        })
+        // Мышь внутри закреплённого окошка до графика не доходит: иначе выделение
+        // текста превращалось бы в протяжку-зум, а клик — снимал бы закрепление.
+        tip.addEventListener('mousedown', (e) => e.stopPropagation())
+        tip.addEventListener('click', (e) => {
+          e.stopPropagation()
+          if (e.target.closest('.qe-tip-x')) unpin()
+          else if (e.target.closest('.qe-tip-copy')) copyLabels()
+        })
+        onKey = (e) => { if (e.key === 'Escape' && pinned) unpin() }
+        document.addEventListener('keydown', onKey)
+      },
+      destroy() {
+        pinned = false
+        if (onKey) document.removeEventListener('keydown', onKey)
       },
       setCursor(u) {
+        if (pinned) return // закреплено — ни содержимое, ни место не трогаем
         const { idx, left, top } = u.cursor
         if (idx == null || left == null || left < 0) { tip.style.display = 'none'; return }
         // ближайшая по вертикали серия в точке idx
@@ -561,14 +790,21 @@ function tooltipPlugin() {
         const metric = sm.metric
         const name = metric.__name__ || s.label || 'значение'
         const qBadge = multiRun.value ? `<span class="qe-tip-qn">q${sm.qi + 1}</span>` : ''
+        // Строка лейбла — ГОТОВЫЙ кусок запроса key="value": что выделил мышью, то и
+        // скопировалось, без пробелов вокруг «=» — сразу вставляется в выражение.
         const labelRows = Object.entries(metric)
           .filter(([k]) => k !== '__name__')
-          .map(([k, v]) => `<div class="qe-tip-row"><span class="qe-tip-k">${escapeHtml(k)}</span><span class="qe-tip-val">${escapeHtml(v)}</span></div>`)
+          .map(([k, v]) => `<div class="qe-tip-row"><span class="qe-tip-k">${escapeHtml(k)}</span><span class="qe-tip-eq">="</span><span class="qe-tip-val">${escapeHtml(v)}</span><span class="qe-tip-eq">"</span></div>`)
           .join('')
         tip.innerHTML =
-          `<div class="qe-tip-h"><span class="qe-tip-dot" style="background:${s.stroke}"></span><span class="qe-tip-name">${escapeHtml(name)}</span>${qBadge}</div>` +
+          `<div class="qe-tip-h"><span class="qe-tip-dot" style="background:${s.stroke}"></span><span class="qe-tip-name">${escapeHtml(name)}</span>${qBadge}` +
+          `<button class="qe-tip-copy" title="скопировать лейблы">⧉</button>` +
+          `<button class="qe-tip-x" title="открепить (Esc)">×</button></div>` +
           (labelRows ? `<div class="qe-tip-labels">${labelRows}</div>` : '') +
-          `<div class="qe-tip-foot"><span class="qe-tip-v">${bestVal}</span><span class="qe-tip-t">${new Date(t * 1000).toLocaleString()}</span></div>`
+          `<div class="qe-tip-foot"><span class="qe-tip-v">${bestVal}</span><span class="qe-tip-t">${new Date(t * 1000).toLocaleString()}</span></div>` +
+          `<div class="qe-tip-hint">клик — закрепить</div>`
+        // Текст для кнопки «копировать» — серия целиком, как её пишут в запросе.
+        tip.dataset.copy = labelsStr(metric) || name
         tip.style.display = 'block'
         const w = u.over.clientWidth
         const tw = tip.offsetWidth || 340
@@ -647,7 +883,7 @@ async function drawChart(series) {
   chart = new uPlot(
     {
       width,
-      height: 380,
+      height: CHART_H,
       series: uSeries,
       axes: [
         { stroke: axisColor, grid: { stroke: gridColor, width: 1 }, ticks: { stroke: gridColor } },
@@ -662,7 +898,7 @@ async function drawChart(series) {
   )
   if (ro) ro.disconnect()
   ro = new ResizeObserver(() => {
-    if (chart && chartEl.value) chart.setSize({ width: chartEl.value.clientWidth, height: 380 })
+    if (chart && chartEl.value) chart.setSize({ width: chartEl.value.clientWidth, height: CHART_H })
   })
   ro.observe(chartEl.value)
 }
@@ -729,8 +965,35 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
         </ul>
       </div>
 
-      <!-- Ещё одно выражение на тот же график/таблицу — как Add Query в vmui. -->
-      <button class="add-q" @click="addQuery">+ Добавить запрос</button>
+      <!-- Кнопки под полями: ещё одно выражение (как Add Query в vmui) и история. -->
+      <div class="qtools">
+        <button class="add-q" @click="addQuery">+ Добавить запрос</button>
+        <button
+          v-if="history.length"
+          class="add-q hist-btn"
+          :class="{ on: histOpen }"
+          @click="histOpen = !histOpen"
+        >⟲ История <span class="hist-n">{{ history.length }}</span></button>
+      </div>
+
+      <!-- История: последние запуски, свежие сверху. Строка = запуск целиком:
+           клик возвращает ВСЕ его выражения в поля (лишние поля убираются) и
+           сразу выполняет. Список в потоке, как подсказки — не перекрывается. -->
+      <div v-if="histOpen && history.length" class="hist">
+        <div class="hist-head">
+          <span>последние запуски — клик вернёт запрос во все поля и выполнит</span>
+          <button class="hist-clear" @click="clearHistory">очистить</button>
+        </div>
+        <ul class="hist-list">
+          <li v-for="(h, i) in history" :key="i">
+            <button class="hist-item" @mousedown.prevent @click="useHistory(h)">
+              <span v-for="(e, j) in h.q" :key="j" class="hist-q" :title="e">
+                <span v-if="h.q.length > 1" class="hist-qn">q{{ j + 1 }}</span>{{ e }}
+              </span>
+            </button>
+          </li>
+        </ul>
+      </div>
 
       <!-- Вкладки режима Table / Graph — подчёркиванием, как в Prometheus. -->
       <div class="qmodes">
@@ -774,7 +1037,6 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
     </div>
 
     <div v-for="(e, i) in errors" :key="i" class="msg msg-err">{{ e }}</div>
-    <div v-if="truncated" class="trunc">{{ truncated }}</div>
 
     <!-- Graph: первая загрузка — скелет на месте графика; при повторном запросе
          старый график остаётся, но пригашен (dim), чтобы было видно ожидание. -->
@@ -803,6 +1065,15 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
           <span class="leg-val">{{ s.value }}</span>
         </button>
       </div>
+
+      <!-- Серий больше, чем нарисовано: догружаем порциями по кнопке (данные уже
+           у нас, VM не перезапрашиваем). -->
+      <div v-if="allSeries.length > chartSeries.length" class="more">
+        <button class="btn btn-sm" @click="showMoreSeries">
+          Показать ещё {{ Math.min(MAX_SERIES, allSeries.length - chartSeries.length) }}
+        </button>
+        <span class="more-note">показано {{ chartSeries.length }} из {{ allSeries.length }} серий</span>
+      </div>
     </div>
 
     <!-- Table: столбец на каждый лейбл (как таблица в vmui); при нескольких
@@ -810,25 +1081,54 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
          скелет-строки; при повторном запросе старая таблица остаётся, но пригашена. -->
     <div v-if="mode === 'table' && loading && !instant.length" class="card"><Skeleton :lines="6" :height="24" /></div>
     <div v-else-if="mode === 'table' && instant.length" class="card" :class="{ dim: loading }">
-      <div class="tbl-scroll">
+      <div v-if="Object.keys(colW).length" class="tbl-bar">
+        <button class="btn btn-sm" @click="resetCols">сбросить ширины</button>
+      </div>
+      <div ref="scrollerEl" class="tbl-scroll" @scroll="syncFromTable">
         <table class="tbl">
           <thead>
             <tr>
               <th v-if="multiRun" class="qn">#</th>
-              <th v-if="hasMetricName" class="lbl">__name__</th>
-              <th v-for="c in columns" :key="c" class="lbl">{{ c }}</th>
-              <th class="val">value</th>
+              <th v-if="hasMetricName" class="lbl" :style="colStyle('__name__')">
+                __name__
+                <span class="rz" title="потянуть — ширина, двойной клик — сброс"
+                      @mousedown="startResize('__name__', $event)" @dblclick="resetCol('__name__')"></span>
+              </th>
+              <th v-for="c in columns" :key="c" class="lbl" :style="colStyle(c)">
+                {{ c }}
+                <span class="rz" title="потянуть — ширина, двойной клик — сброс"
+                      @mousedown="startResize(c, $event)" @dblclick="resetCol(c)"></span>
+              </th>
+              <th class="val" :style="colStyle('value')">
+                value
+                <span class="rz" title="потянуть — ширина, двойной клик — сброс"
+                      @mousedown="startResize('value', $event)" @dblclick="resetCol('value')"></span>
+              </th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="(row, i) in instant" :key="i">
               <td v-if="multiRun" class="qn mono">q{{ row.qi + 1 }}</td>
-              <td v-if="hasMetricName" class="ser">{{ row.metric.__name__ || '' }}</td>
-              <td v-for="c in columns" :key="c" class="ser">{{ row.metric[c] ?? '' }}</td>
-              <td class="val">{{ row.value }}</td>
+              <td v-if="hasMetricName" class="ser" :style="colStyle('__name__')" :title="row.metric.__name__ || ''">{{ row.metric.__name__ || '' }}</td>
+              <td v-for="c in columns" :key="c" class="ser" :style="colStyle(c)" :title="row.metric[c] ?? ''">{{ row.metric[c] ?? '' }}</td>
+              <td class="val" :style="colStyle('value')" :title="String(row.value)">{{ row.value }}</td>
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <!-- Единственный горизонтальный ползунок таблицы: прилипает к нижнему краю
+           экрана, пока таблица в поле зрения (родной ползунок скрыт стилями). -->
+      <div v-show="needXbar" ref="xbarEl" class="xbar" @scroll="syncFromBar">
+        <div class="xbar-in" :style="{ width: tblW + 'px' }"></div>
+      </div>
+
+      <!-- Строк больше, чем показано: следующая порция по кнопке. -->
+      <div v-if="allRows.length > instant.length" class="more">
+        <button class="btn btn-sm" @click="showMoreRows">
+          Показать ещё {{ Math.min(MAX_TABLE_ROWS, allRows.length - instant.length) }}
+        </button>
+        <span class="more-note">показано {{ instant.length }} из {{ allRows.length }} строк</span>
       </div>
     </div>
     <div v-else-if="mode === 'table' && !loading" class="empty">Нет данных — выполни запрос.</div>
@@ -843,6 +1143,47 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
 </template>
 
 <style scoped>
+/* Кнопки под полями запросов: «+ Добавить запрос» и «История». */
+.qtools { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.hist-btn { display: inline-flex; align-items: center; gap: 7px; }
+.hist-btn.on { border-style: solid; border-color: var(--accent); color: var(--accent-bright); }
+.hist-n {
+  font-size: 11px; color: var(--text-mute);
+  background: var(--chip); border-radius: 20px; padding: 1px 7px;
+}
+.hist-btn.on .hist-n { color: var(--accent-bright); background: var(--accent-soft); }
+
+/* Выпадающая история запусков — в потоке под кнопками (как список подсказок). */
+.hist {
+  margin-top: 8px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel-2); box-shadow: var(--shadow); overflow: hidden;
+}
+.hist-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 7px 12px; border-bottom: 1px solid var(--border-soft);
+  font-size: 11px; color: var(--text-mute);
+}
+.hist-clear { background: transparent; border: none; color: var(--text-mute); font-size: 11px; padding: 0; }
+.hist-clear:hover { color: var(--danger); }
+.hist-list { list-style: none; margin: 0; padding: 4px; max-height: 260px; overflow-y: auto; }
+/* Строка = один запуск: сверху вниз его выражения (q1/q2 — чьё какое). */
+.hist-item {
+  display: flex; flex-direction: column; gap: 3px; width: 100%; text-align: left;
+  background: transparent; border: none; border-radius: 7px; padding: 7px 9px;
+}
+.hist-item:hover { background: var(--accent-soft); }
+.hist-q {
+  display: block; font-family: var(--mono); font-size: 12px; color: var(--text-dim);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.hist-item:hover .hist-q { color: var(--accent-bright); }
+/* Номер выражения внутри запуска — тем же чипом, что и у полей запроса. */
+.hist-qn {
+  display: inline-block; margin-right: 7px;
+  font-size: 10px; font-weight: 600; color: var(--accent-bright);
+  background: var(--accent-soft); border-radius: 5px; padding: 1px 5px;
+}
+
 .editor { position: relative; }
 .editor + .editor { margin-top: 10px; }
 .prompt {
@@ -900,13 +1241,9 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
 }
 .sug li.active, .sug li:hover { background: var(--accent-soft); color: var(--accent-bright); }
 
-/* Плашка «результат обрезан» — мягкий янтарный чип (читается в обеих темах). */
-.trunc {
-  display: inline-block; margin: 8px 0 0;
-  font-size: 12px; font-family: var(--mono); color: #e8a13c;
-  background: rgba(232, 161, 60, 0.12); border: 1px solid rgba(232, 161, 60, 0.35);
-  border-radius: 7px; padding: 6px 10px;
-}
+/* «Показать ещё» — по центру под графиком/таблицей, рядом счётчик показанного. */
+.more { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 14px; }
+.more-note { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
 
 /* Вкладки режима Table / Graph — подчёркиванием, как в Prometheus. */
 .qmodes { display: flex; gap: 20px; margin-top: 14px; border-bottom: 1px solid var(--border-soft); }
@@ -969,10 +1306,48 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
 /* Значение серии — прижато вправо, как колонка Value в таблице. */
 .leg-val { margin-left: auto; padding-left: 14px; font-family: var(--mono); font-size: 12px; color: var(--text); white-space: nowrap; user-select: text; cursor: text; }
 
-.tbl-scroll { overflow-x: auto; }
-.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
-.tbl th { text-align: left; color: var(--text-mute); font-weight: 600; padding: 8px; border-bottom: 1px solid var(--border-soft); white-space: nowrap; }
+/* Кнопка сброса ширин колонок (появляется, когда что-то тянули мышью). */
+.tbl-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
+
+/* Единственный горизонтальный ползунок таблицы. Липнет к НИЖНЕМУ краю экрана,
+   пока карточка с таблицей в поле зрения: длинный список листаешь страницей, а
+   ползунок всё это время на виду — можно уехать вправо по лейблам в любой момент.
+   Внутри пустая распорка шириной с таблицу — по ней браузер и рисует ползунок.
+   Вид задаём явно (::-webkit-scrollbar): иначе macOS прячет полосу до тех пор,
+   пока что-нибудь не прокрутишь, и «всегда на виду» не получается. */
+.xbar {
+  position: sticky; bottom: 0; z-index: 4;
+  overflow-x: auto; overflow-y: hidden;
+  margin-top: 6px; padding-top: 2px;
+  background: var(--panel); border-radius: 6px;
+}
+.xbar-in { height: 1px; }
+.xbar::-webkit-scrollbar { height: 11px; }
+.xbar::-webkit-scrollbar-track { background: var(--panel-2); border-radius: 6px; }
+.xbar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
+.xbar::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+/* Таблицу по высоте НЕ режем: список видно целиком, страница листается как в
+   vmui. Прокрутка тут только горизонтальная, и её родной ползунок прячем — вместо
+   него один липкий (.xbar ниже), чтобы полоса не появлялась в двух местах. */
+.tbl-scroll { overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.tbl-scroll::-webkit-scrollbar { display: none; }
+.tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+.tbl th {
+  position: relative; /* точка отсчёта для .rz — «ручки» ширины колонки */
+  text-align: left; color: var(--text-mute); font-weight: 600; padding: 8px; white-space: nowrap;
+  border-bottom: 1px solid var(--border-soft);
+}
 .tbl td { padding: 8px; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+/* Колонку, которой задали ширину, обрезаем многоточием (полный текст — в title):
+   иначе авто-раскладка растянет её обратно под самое длинное значение. */
+.tbl th, .tbl td { overflow: hidden; text-overflow: ellipsis; }
+/* Разделитель для растягивания — узкая полоса у правого края заголовка. */
+.rz {
+  position: absolute; top: 0; right: 0; width: 7px; height: 100%;
+  cursor: col-resize; user-select: none;
+}
+.rz:hover { background: var(--accent); opacity: 0.55; }
 /* Строка под курсором подсвечивается — легче вести взгляд по широкой таблице.
    Полупрозрачный серый одинаково спокойно работает в обеих темах. */
 .tbl tbody tr:hover td { background: rgba(127, 127, 127, 0.07); }
@@ -1017,11 +1392,38 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
   flex: none; margin-left: auto; color: var(--text-mute); font-size: 10px;
   border: 1px solid var(--border-soft); border-radius: 4px; padding: 0 4px;
 }
+/* Кнопки «копировать»/«открепить» — только у ЗАКРЕПЛЁННОГО окошка (пока оно
+   бегает за курсором, нажать на них всё равно нельзя). */
+.qe-tip-copy, .qe-tip-x { display: none; }
+.qe-tip-qn + .qe-tip-copy { margin-left: 6px; }
+.qe-tip.pinned .qe-tip-copy, .qe-tip.pinned .qe-tip-x {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: none; width: 20px; height: 20px; margin-top: -2px;
+  background: transparent; border: 1px solid var(--border-soft); border-radius: 5px;
+  color: var(--text-mute); font-size: 12px; line-height: 1; cursor: pointer;
+}
+.qe-tip.pinned .qe-tip-copy { margin-left: auto; }
+.qe-tip.pinned .qe-tip-qn + .qe-tip-copy { margin-left: 6px; }
+.qe-tip.pinned .qe-tip-x { margin-left: 4px; font-size: 15px; }
+.qe-tip.pinned .qe-tip-copy:hover, .qe-tip.pinned .qe-tip-x:hover { color: var(--accent-bright); border-color: var(--accent); }
+.qe-tip.pinned .qe-tip-copy.done { color: #3fae72; border-color: #3fae72; }
+/* Подсказка «клик — закрепить» видна только пока не закреплено. */
+.qe-tip-hint { margin-top: 6px; font-size: 10px; color: var(--text-mute); text-align: right; }
+.qe-tip.pinned .qe-tip-hint { display: none; }
+/* Закреплённое окошко: мышь работает (можно выделить и скопировать лейблы),
+   рамка акцентная — видно, что оно «прибито». */
+.qe-tip.pinned {
+  pointer-events: auto; user-select: text; cursor: auto;
+  border-color: var(--accent); max-height: 420px;
+}
 /* Лейблы — по строке на каждый, key приглушён, value ярче; отступ и линия слева. */
 .qe-tip-labels { margin: 7px 0 0; padding: 6px 0 2px 16px; border-top: 1px solid var(--border-soft); display: flex; flex-direction: column; gap: 3px; }
-.qe-tip-row { display: flex; gap: 6px; line-height: 1.3; word-break: break-all; }
-.qe-tip-k { color: var(--text-mute); flex: none; }
-.qe-tip-k::after { content: '='; margin-left: 6px; color: var(--text-mute); }
+/* Строка лейбла — обычный текст key="value" одним куском: без flex-gap и без «=»
+   в ::after (браузер добавлял бы к копии лишние пробелы, и вставить в запрос было
+   нельзя). Цветом различаем только имя и значение. */
+.qe-tip-row { display: block; line-height: 1.35; word-break: break-all; }
+.qe-tip-k { color: var(--text-mute); }
+.qe-tip-eq { color: var(--text-mute); }
 .qe-tip-val { color: var(--text); }
 /* Подвал — значение (жирно) и время (приглушённо). */
 .qe-tip-foot { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--border-soft); display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }

@@ -3,7 +3,7 @@
 // job (scrapePool), в шапке группы счётчик up/total. По умолчанию ВСЕ группы
 // свёрнуты (целей бывают тысячи — раскрытые таблицы тормозили вкладку); группа
 // раскрывается кликом, а при поиске/фильтре down раскрываются найденные.
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import Skeleton from '../../../shared/Skeleton.vue'
 import { victoriaApi } from '../api.js'
 
@@ -12,7 +12,10 @@ const props = defineProps({ env: { type: String, required: true } })
 const targets = ref([]) // activeTargets
 const search = ref('')
 const onlyDown = ref(false)
-const expanded = ref({}) // { [pool]: true } — раскрытые группы (по умолчанию всё свёрнуто)
+// Ручной выбор пользователя по группам: { [pool]: true|false }. Пока группы тут нет,
+// действует автоматика (поиск/«только down» раскрывают найденное). Как только по
+// группе кликнули — решает клик, поэтому лишнюю группу можно закрыть и при поиске.
+const expanded = ref({})
 const loading = ref(true)
 const error = ref(null)
 
@@ -76,17 +79,23 @@ const groups = computed(() => {
 const totalUp = computed(() => targets.value.filter((t) => t.health === 'up').length)
 const totalDown = computed(() => targets.value.length - totalUp.value)
 
-// Группа раскрыта, если раскрыта руками, либо активен поиск/«только down» —
-// иначе найденные строки прятались бы под свёрнутыми шапками.
+// Группа раскрыта: решает клик по ней (если был), иначе автоматика — при поиске и
+// «только down» найденные группы раскрыты, иначе всё свёрнуто.
 function isOpen(pool) {
-  return !!expanded.value[pool] || !!search.value.trim() || onlyDown.value
+  const manual = expanded.value[pool]
+  if (manual !== undefined) return manual
+  return !!search.value.trim() || onlyDown.value
 }
-function toggle(pool) { expanded.value = { ...expanded.value, [pool]: !expanded.value[pool] } }
+// Клик всегда переключает ТЕКУЩЕЕ состояние (в т.ч. закрывает авто-раскрытую группу).
+function toggle(pool) { expanded.value = { ...expanded.value, [pool]: !isOpen(pool) } }
 function setAll(open) {
   const c = {}
-  if (open) for (const g of groups.value) c[g.pool] = true
+  for (const g of groups.value) c[g.pool] = open
   expanded.value = c
 }
+// Новый поиск/переключение «только down» — забываем ручные закрытия: пользователь
+// ищет заново и ждёт, что найденное снова раскрыто.
+watch([search, onlyDown], () => { expanded.value = {} })
 </script>
 
 <template>

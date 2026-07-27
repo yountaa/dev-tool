@@ -12,6 +12,7 @@ const props = defineProps({
 
 const data = ref(null)
 const topn = ref(10)   // TSDB Status по умолчанию показывает топ-10
+const TOPN_STEP = 10   // на сколько строк удлиняет списки кнопка «Показать ещё»
 const loading = ref(true)
 const error = ref(null)
 const verified = ref(false) // сверяли ли топ-метрики с хранилищем (на больших кластерах — нет)
@@ -104,6 +105,19 @@ const lists = computed(() => {
 })
 
 function maxOf(arr) { return arr.reduce((m, x) => Math.max(m, x.value || 0), 0) || 1 }
+
+// «Показать ещё» под списками: просим у VM топ побольше и перечитываем. Грузим
+// только по нажатию — сама вкладка остаётся лёгкой.
+function showMore() {
+  topn.value += TOPN_STEP
+  loadTsdb()
+}
+// В селекторе всегда есть текущее значение — иначе после «Показать ещё» (13, 30…)
+// select показывал бы пустоту.
+const topnOptions = computed(() => {
+  const set = new Set([10, 20, 50, 100, topn.value])
+  return [...set].sort((a, b) => a - b)
+})
 </script>
 
 <template>
@@ -113,9 +127,7 @@ function maxOf(arr) { return arr.reduce((m, x) => Math.max(m, x.value || 0), 0) 
     <div class="bar">
       <label class="lbl">Показывать топ
         <select class="input topn" v-model.number="topn" @change="loadTsdb()">
-          <option :value="10">10</option>
-          <option :value="20">20</option>
-          <option :value="50">50</option>
+          <option v-for="n in topnOptions" :key="n" :value="n">{{ n }}</option>
         </select>
       </label>
       <span v-if="total !== null" class="total">Всего серий: <b>{{ total.toLocaleString() }}</b></span>
@@ -141,6 +153,12 @@ function maxOf(arr) { return arr.reduce((m, x) => Math.max(m, x.value || 0), 0) 
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- Догрузка следующих строк топа — кнопка по центру под списками. -->
+    <div v-if="!loading && lists.length" class="more">
+      <button class="btn btn-sm" :disabled="loading" @click="showMore">Показать ещё {{ TOPN_STEP }}</button>
+      <span class="more-note">сейчас топ-{{ topn }}</span>
     </div>
   </div>
 </template>
@@ -168,4 +186,8 @@ function maxOf(arr) { return arr.reduce((m, x) => Math.max(m, x.value || 0), 0) 
 .bar-fill { display: block; height: 100%; background: var(--accent); border-radius: 4px; }
 .val { font-family: var(--mono); font-size: 12px; text-align: right; white-space: nowrap; }
 .empty { color: var(--text-mute); font-size: 13px; padding: 16px 2px; }
+
+/* «Показать ещё» — по центру под всеми списками. */
+.more { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 18px; }
+.more-note { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
 </style>

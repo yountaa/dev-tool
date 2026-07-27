@@ -12,7 +12,7 @@ import { ref, onMounted } from 'vue'
 import Skeleton from '../../../shared/Skeleton.vue'
 import { victoriaApi } from '../api.js'
 
-const rows = ref([]) // [{ env, group, used, free, total, percent, eta_days } | { env, error }]
+const rows = ref([]) // [{ env, group, used, free, total, percent, eta_days }] — только найденное
 const loading = ref(true)
 const error = ref(null)
 
@@ -20,9 +20,14 @@ async function load() {
   loading.value = true
   error.value = null
   try {
-    rows.value = await victoriaApi.diskUsage()
+    // Кластер не ответил / не отдал self-метрик — бэкенд присылает строку с error.
+    // Такие строки НЕ показываем: вкладка отвечает на вопрос «где сколько занято»,
+    // и красная строка «в кластере X нет метрик» тут только шумит. Показываем то,
+    // что нашли; не нашли нигде — спокойная подпись ниже.
+    const all = await victoriaApi.diskUsage()
+    rows.value = all.filter((r) => !r.error)
   } catch (e) {
-    error.value = e.message
+    error.value = e.message // упал сам запрос к бэкенду — это уже не «нет метрик»
   } finally {
     loading.value = false
   }
@@ -82,34 +87,29 @@ function fmtEta(days) {
         </thead>
         <tbody>
           <tr v-for="r in rows" :key="r.env + '|' + (r.group ?? '')">
-            <!-- Кластер в таблице не показываем (строки — только по группам), но в
-                 строке ошибки он нужен: иначе непонятно, какой кластер не ответил. -->
-            <template v-if="r.error">
-              <td class="err" colspan="6">{{ r.env }}: {{ r.error }}</td>
-            </template>
-            <template v-else>
-              <!-- Метрики без лейбла group (обычный Prometheus) — группа «—» -->
-              <td class="l mono grp">{{ r.group || '—' }}</td>
-              <td class="r mono">{{ fmtBytes(r.used) }}</td>
-              <td class="r mono">{{ fmtBytes(r.free) }}</td>
-              <td class="r mono">{{ fmtBytes(r.total) }}</td>
-              <td class="r mono eta" :class="fmtEta(r.eta_days).cls" title="примерное время до заполнения диска">{{ fmtEta(r.eta_days).text }}</td>
-              <td class="fillcol">
-                <div class="fill">
-                  <div class="bar">
-                    <div class="bar-in" :class="fillClass(r.percent)" :style="{ width: Math.min(100, r.percent) + '%' }"></div>
-                  </div>
-                  <span class="pct mono" :class="fillClass(r.percent)">{{ r.percent.toFixed(1) }}%</span>
+            <!-- Метрики без лейбла group (обычный Prometheus) — группа «—» -->
+            <td class="l mono grp">{{ r.group || '—' }}</td>
+            <td class="r mono">{{ fmtBytes(r.used) }}</td>
+            <td class="r mono">{{ fmtBytes(r.free) }}</td>
+            <td class="r mono">{{ fmtBytes(r.total) }}</td>
+            <td class="r mono eta" :class="fmtEta(r.eta_days).cls" title="примерное время до заполнения диска">{{ fmtEta(r.eta_days).text }}</td>
+            <td class="fillcol">
+              <div class="fill">
+                <div class="bar">
+                  <div class="bar-in" :class="fillClass(r.percent)" :style="{ width: Math.min(100, r.percent) + '%' }"></div>
                 </div>
-              </td>
-            </template>
+                <span class="pct mono" :class="fillClass(r.percent)">{{ r.percent.toFixed(1) }}%</span>
+              </div>
+            </td>
           </tr>
         </tbody>
       </table>
       </div>
     </div>
 
-    <div v-else-if="!error" class="empty">Нет настроенных кластеров (задай vm_&lt;env&gt; в окружении).</div>
+    <!-- Ни одной группы: либо кластеров нет, либо ни в одном не нашлись self-метрики
+         vmstorage. Разницы для пользователя тут нет — спокойная подпись без красного. -->
+    <div v-else-if="!error" class="empty">Данных по дискам не нашлось.</div>
   </div>
 </template>
 
@@ -119,12 +119,11 @@ function fmtEta(days) {
 
 /* На узком окне таблица скроллится внутри себя, а не обрезается/распирает страницу. */
 .tbl-scroll { overflow-x: auto; }
-/* Не растягиваем на всю ширину рабочей области — иначе колонок мало, они широкие,
-   и заголовок отъезжает далеко от своих чисел. max-width подрезан с 1120 под 6
-   столбцов (без «Кластера»). min-width тут не нужен: таблица и так не сжимается
-   уже своего содержимого (~610px даже на коротких именах групп) — на узком окне
-   её подхватывает горизонтальный скролл tbl-scroll. */
-.tbl { width: 100%; max-width: 1000px; border-collapse: collapse; font-size: 13px; }
+/* Растягиваем на всю ширину рабочей области (max-width убран): лишнюю ширину
+   забирает колонка «Заполнено» с полосой — числовые колонки не разъезжаются,
+   потому что они nowrap и жмутся к своему содержимому. На узком окне таблицу
+   подхватывает горизонтальный скролл tbl-scroll. */
+.tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
 .tbl th { color: var(--text-mute); font-weight: 600; padding: 9px 10px; border-bottom: 1px solid var(--border-soft); }
 .tbl td { padding: 11px 10px; border-bottom: 1px solid var(--border-soft); }
 .tbl tr:last-child td { border-bottom: none; }
