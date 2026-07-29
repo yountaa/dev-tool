@@ -39,7 +39,7 @@ load_dotenv()
 
 # Все модули-вкладки приложения. Фронт строит рельс из своего реестра, а бэкенд
 # по этому списку решает, какие вкладки показать пользователю (см. /access/me).
-KNOWN_MODULES = ["silences", "victoria"]
+KNOWN_MODULES = ["silences", "victoria", "alerts"]
 
 log = logging.getLogger("access")  # логи авторизации/RBAC
 

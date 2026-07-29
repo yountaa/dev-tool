@@ -11,6 +11,8 @@ from fastapi.responses import JSONResponse
 import logging_setup
 from access import log_config as log_auth_config, request_log_fields, router as access_router
 from share import router as share_router
+from modules.alerts import storage as alerts_storage
+from modules.alerts.routes import router as alerts_router
 from modules.silences import save_hub
 from modules.silences.client import AlertmanagerError
 from modules.silences.routes import router as silences_router
@@ -28,6 +30,7 @@ async def lifespan(app: FastAPI):
     """На старте: показать настройки авторизации, подготовить папку правил, шедулер."""
     log_auth_config()  # действующие AUTH_/RBAC_ настройки — первым делом в лог
     save_hub.ensure_repo()
+    alerts_storage.ensure_schema()  # alerts_history / alerts_meta (не ломает silences)
     scheduler.start()
     log.info("приложение запущено")
     yield
@@ -100,6 +103,7 @@ app.include_router(access_router)     # RBAC уровня приложения: 
 app.include_router(share_router)      # короткие ссылки на вид: POST /share, GET /s/<id>
 app.include_router(silences_router)
 app.include_router(victoria_router)
+app.include_router(alerts_router)
 
 
 @app.get("/health")

@@ -155,7 +155,11 @@ async function shareLink() {
           <span class="u-name">локальный режим</span>
         </div>
       </header>
-      <component :is="active.component" :me="me" :auth="auth" />
+      <!-- KeepAlive только для Alerts: silences/victoria монтируются как раньше.
+           Имя компонента задаётся defineOptions({ name: 'AlertsModule' }). -->
+      <KeepAlive include="AlertsModule" :max="3">
+        <component :is="active.component" :key="activeId" :me="me" :auth="auth" />
+      </KeepAlive>
     </main>
 
     <!-- RBAC: доступных вкладок нет (пустой modules из /access/me) — не пустой экран,

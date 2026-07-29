@@ -14,5 +14,6 @@ COPY nginx.conf /etc/nginx/templates/default.conf.template
 COPY docker-entrypoint.d/10-backend-upstream.sh /docker-entrypoint.d/10-backend-upstream.sh
 RUN chmod +x /docker-entrypoint.d/10-backend-upstream.sh
 ENV FRONTEND_PORT=80 \
-    BACKEND_URL=http://backend:8000
+    BACKEND_URL=http://backend:8000 \
+    N8N_URL=http://n8n:5678
 EXPOSE 80

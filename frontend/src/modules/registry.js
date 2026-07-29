@@ -8,8 +8,10 @@
 //  и с access_<id> в окружении — тогда вкладка скрывается у тех, кому не положено.)
 import silences from './silences/index.js'
 import victoria from './victoria/index.js'
+import alerts from './alerts/index.js'
 
 export const modules = [
   silences,
   victoria,
+  alerts,
 ]
