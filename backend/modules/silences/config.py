@@ -5,6 +5,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+import logging_setup
+
 load_dotenv()  # подхватит .env рядом, если есть
 
 log = logging.getLogger("silences.config")
@@ -39,14 +41,18 @@ for _key, _value in os.environ.items():
 
 # Проверка: имя в rules_<имя> должно совпадать с окружением alert_<имя>. Если задал
 # rules_ для несуществующего окружения (опечатка в имени) — источник правил «повиснет»
-# и вкладка «Алерты» молча откатится на алерты из AM. Предупреждаем об этом при старте.
+# и вкладка «Алерты» молча откатится на алерты из AM.
+# Замечания копим и пишем на СТАРТЕ (log_config): файл выполняется при импорте, то
+# есть до logging_setup.setup(), и строка ушла бы мимо JSON-форматтера.
+_ISSUES: list[tuple[str, dict]] = []
 for _name in RULE_SOURCES:
     if _name not in ALERTMANAGERS:
-        log.warning(
-            "rules_%s задан, но окружения alert_%s нет — проверь имя; "
-            "источник правил не подключится, «Алерты» покажут только живые алерты Alertmanager",
-            _name, _name,
-        )
+        _ISSUES.append(("silence.orphan_rules_source", {
+            "env": _name,
+            "known_envs": sorted(ALERTMANAGERS),
+            "hint": f"rules_{_name} задан, а окружения alert_{_name} нет — проверь имя; "
+                    f"источник правил не подключится, «Алерты» покажут только живые алерты AM",
+        }))
 
 
 # --- Где хранить правила и историю -------------------------------------------
@@ -107,3 +113,16 @@ AUTH_FALLBACK_USER = os.getenv("AUTH_FALLBACK_USER", "local").strip()
 
 def known_env(env: str) -> bool:
     return env in ALERTMANAGERS
+
+
+def log_config() -> None:
+    """Что прочитано из окружения — одной строкой на старте, следом замечания."""
+    logging_setup.event(
+        log, "silence.config",
+        envs=sorted(ALERTMANAGERS),
+        with_rules_source=sorted(RULE_SOURCES),
+        storage=STORAGE_BACKEND,
+        tz=SILENCE_TZ,
+    )
+    for name, fields in _ISSUES:
+        logging_setup.event(log, name, level=logging.WARNING, **fields)

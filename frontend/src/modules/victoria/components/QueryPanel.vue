@@ -296,13 +296,18 @@ function stepEval(deltaSec) {
 const COLORS = ['#ff7a59', '#56b8e6', '#6fcb85', '#f0b653', '#a98ff0', '#ef6f9d', '#4ed0b4', '#8f9ff2', '#d3c356', '#e08e77']
 
 const chartEl = ref(null)
-const chartSeries = ref([]) // [{ qi, label, color, value, show }] — легенда под графиком
+const chartSeries = ref([]) // [{ qi, label, color, value, show, lastAt, stale }] — легенда
 const allSeries = ref([])   // ВСЕ серии последнего range-запуска (до среза)
 const seriesShown = ref(MAX_SERIES) // сколько серий на графике сейчас («Показать ещё»)
+const rangeInfo = ref('')   // подпись под графиком: какой период показан и с каким шагом
 let chart = null
 let ro = null
 let inflight = null // AbortController текущего запуска (общий на все запросы; «Отмена»)
 let seriesMeta = [] // [{ metric, qi }] серий графика (для аккуратного тултипа по наведению)
+// Диапазон последнего запуска. График рисуем на ВЕСЬ запрошенный период, а не по
+// крайним точкам ответа, — иначе метрика, переставшая идти неделю назад, тянулась
+// бы линией до правого края и выглядела бы живой (см. drawChart).
+let lastRange = { start: 0, end: 0, step: 60 }
 
 // Смена размера окна: пересчитываем ползунок таблицы И ширину графика. Ширину
 // графика ведёт ResizeObserver (см. drawChart), но полагаться только на него
@@ -682,6 +687,7 @@ async function runRange(items, signal) {
   // легендой — данные уже пришли, перезапрашивать VM не нужно.
   allSeries.value = merged
   seriesShown.value = MAX_SERIES
+  lastRange = { start, end, step }
   await drawChart(merged.slice(0, seriesShown.value))
   return merged.length
 }
@@ -697,6 +703,87 @@ function showMoreRows() { rowsShown.value += MAX_TABLE_ROWS }
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+}
+
+// --- Показ времени на графике --------------------------------------------------
+// Всё время на графике — местное, как и поля «От»/«До» (datetime-local): смешивать
+// зоны в одной панели нельзя, иначе подпись под курсором не сходится с полями.
+const two = (n) => String(n).padStart(2, '0')
+const dayOf = (d) => `${two(d.getDate())}.${two(d.getMonth() + 1)}`
+const timeOf = (d) => `${two(d.getHours())}:${two(d.getMinutes())}`
+// «29.07.2026 14:35» — полная метка (подпись периода, легенда).
+function fmtStamp(sec, withSeconds = false) {
+  const d = new Date(sec * 1000)
+  const s = withSeconds ? ':' + two(d.getSeconds()) : ''
+  return `${dayOf(d)}.${d.getFullYear()} ${timeOf(d)}${s}`
+}
+// Длительность по-человечески: 45 с / 21 мин / 2 ч 30 мин / 3 сут.
+function fmtDur(sec) {
+  if (sec < 60) return `${Math.round(sec)} с`
+  if (sec < 3600) return `${Math.round(sec / 60)} мин`
+  if (sec < 86400) {
+    const h = Math.floor(sec / 3600)
+    const m = Math.round((sec % 3600) / 60)
+    return m ? `${h} ч ${m} мин` : `${h} ч`
+  }
+  return `${(sec / 86400).toFixed(sec % 86400 ? 1 : 0)} сут`
+}
+
+// Подписи оси времени. Голое «14:35» не отвечает на вопрос «какой это день», а
+// дата у каждой метки — каша. Поэтому: дату пишем у ПЕРВОЙ метки и там, где
+// начинаются новые сутки, дальше по дню — только время. Ровная полночь и так
+// читается как дата, время у неё не дублируем.
+function axisTimeValues(u, splits) {
+  let prevDay = null
+  return splits.map((t) => {
+    const d = new Date(t * 1000)
+    const day = dayOf(d)
+    const time = timeOf(d)
+    const newDay = day !== prevDay
+    prevDay = day
+    if (!newDay) return time
+    return time === '00:00' ? day : `${day} ${time}`
+  })
+}
+
+// Расстояние в пикселях от точки (px,py) до отрезка (ax,ay)—(bx,by).
+function distToSegment(px, py, ax, ay, bx, by) {
+  const dx = bx - ax
+  const dy = by - ay
+  const len2 = dx * dx + dy * dy
+  let k = len2 ? ((px - ax) * dx + (py - ay) * dy) / len2 : 0
+  k = Math.max(0, Math.min(1, k)) // за концы отрезка не выходим
+  return Math.hypot(px - (ax + dx * k), py - (ay + dy * k))
+}
+
+// Какая ЛИНИЯ ближе всего к курсору.
+// Меряем расстояние до самой линии (до отрезков рядом с курсором), а не по
+// вертикали в точке idx: на крутом участке вертикаль уводила выбор на соседнюю
+// серию — наводишься на одну линию, а в окошке другая метрика. Серии, скрытые в
+// легенде, пропускаем: их линии на графике нет, показывать их значения нельзя.
+const TIP_PROX = 26 // px; дальше от всех линий — окошко не показываем
+function nearestSeries(u, idx, left, top) {
+  let best = null
+  for (let si = 1; si < u.series.length; si++) {
+    if (u.series[si].show === false) continue
+    const ys = u.data[si]
+    const to = Math.min(ys.length - 1, idx + 1)
+    for (let i = Math.max(0, idx - 1); i <= to; i++) {
+      const v = ys[i]
+      if (v == null || isNaN(v)) continue
+      const px = u.valToPos(u.data[0][i], 'x')
+      const py = u.valToPos(v, 'y')
+      let d = Math.hypot(px - left, py - top)
+      const nv = ys[i + 1]
+      if (nv != null && !isNaN(nv)) { // отрезок к следующей точке (в разрыве его нет)
+        const qx = u.valToPos(u.data[0][i + 1], 'x')
+        const qy = u.valToPos(nv, 'y')
+        d = Math.min(d, distToSegment(left, top, px, py, qx, qy))
+      }
+      if (!best || d < best.dist) best = { si, i, dist: d }
+    }
+  }
+  return best && best.dist <= TIP_PROX ? best : null
 }
 
 // Плагин-тултип: вместо гигантской легенды показываем по наведению ближайшую к
@@ -773,17 +860,18 @@ function tooltipPlugin() {
         if (pinned) return // закреплено — ни содержимое, ни место не трогаем
         const { idx, left, top } = u.cursor
         if (idx == null || left == null || left < 0) { tip.style.display = 'none'; return }
-        // ближайшая по вертикали серия в точке idx
-        let best = -1, bestDist = Infinity, bestVal = null
-        for (let i = 1; i < u.series.length; i++) {
-          const v = u.data[i][idx]
-          if (v == null || isNaN(v)) continue
-          const d = Math.abs(u.valToPos(v, 'y') - top)
-          if (d < bestDist) { bestDist = d; best = i; bestVal = v }
-        }
-        if (best < 0) { tip.style.display = 'none'; return }
+        // Ближайшая к курсору ЛИНИЯ (скрытые в легенде не участвуют). Курсор не
+        // у линии — окошка нет: пустое место графика ничего не «выбирает».
+        const hit = nearestSeries(u, idx, left, top)
+        if (!hit) { tip.style.display = 'none'; return }
+        const best = hit.si
+        const ys = u.data[best]
+        // Значение берём в точке под курсором; если у серии там разрыв — в той
+        // соседней точке, по которой её и опознали.
+        const at = (ys[idx] != null && !isNaN(ys[idx])) ? idx : hit.i
+        const bestVal = ys[at]
         const s = u.series[best]
-        const t = u.data[0][idx]
+        const t = u.data[0][at]
         // Имя метрики и лейблы — по отдельности: имя строкой сверху, каждый лейбл
         // отдельной строкой key=value. Так читается даже при десятке лейблов.
         const sm = seriesMeta[best - 1] || { metric: {}, qi: 0 }
@@ -801,7 +889,7 @@ function tooltipPlugin() {
           `<button class="qe-tip-copy" title="скопировать лейблы">⧉</button>` +
           `<button class="qe-tip-x" title="открепить (Esc)">×</button></div>` +
           (labelRows ? `<div class="qe-tip-labels">${labelRows}</div>` : '') +
-          `<div class="qe-tip-foot"><span class="qe-tip-v">${bestVal}</span><span class="qe-tip-t">${new Date(t * 1000).toLocaleString()}</span></div>` +
+          `<div class="qe-tip-foot"><span class="qe-tip-v">${bestVal}</span><span class="qe-tip-t">${fmtStamp(t, true)}</span></div>` +
           `<div class="qe-tip-hint">клик — закрепить</div>`
         // Текст для кнопки «копировать» — серия целиком, как её пишут в запросе.
         tip.dataset.copy = labelsStr(metric) || name
@@ -840,54 +928,102 @@ function lastValue(s) {
   return ''
 }
 
+// Шаг сетки времени: наш step, но если VM отдала точки реже (она вправе округлить
+// шаг вверх), берём её шаг — иначе между реальными точками остались бы пустые
+// слоты и сплошная линия рассыпалась бы на пунктир.
+function gridStep(series, step) {
+  let least = Infinity
+  for (const s of series) {
+    const vals = s.values || []
+    for (let i = 1; i < vals.length; i++) {
+      const d = vals[i][0] - vals[i - 1][0]
+      if (d > 0 && d < least) least = d
+    }
+  }
+  return least === Infinity ? step : Math.max(step, least)
+}
+
 async function drawChart(series) {
   destroyChart()
   if (!series.length) return
-  // Ось X строим из РЕАЛЬНЫХ меток времени, которые вернул VM (объединение по всем
-  // сериям), а не из start+k·step: VM выравнивает точки range-ответа по своей сетке
-  // шага (кратной step), и при широком окне они не совпадали с нашим start+k·step —
-  // выборка по map.has(t) давала сплошь null, и график «пропадал».
-  const tsSet = new Set()
-  for (const s of series) for (const p of (s.values || [])) tsSet.add(p[0])
-  const timeline = [...tsSet].sort((a, b) => a - b)
-  if (!timeline.length) return
+  const { start, end, step } = lastRange
 
+  // Ось X — РОВНАЯ сетка на ВЕСЬ запрошенный период, а не только по точкам ответа.
+  // Так видно, что метрика перестала идти: раньше ось сжималась до последней точки,
+  // линия дотягивалась до правого края и запрос за неделю выглядел так, будто
+  // данные есть до сих пор.
+  // Точку ответа кладём в БЛИЖАЙШИЙ слот сетки (VM выравнивает свои метки времени
+  // по своей сетке, кратной шагу, — сравнивать их с нашими «в лоб» нельзя, на этом
+  // график когда-то пропадал целиком). Слот, в который ничего не легло, остаётся
+  // null, а spanGaps: false рвёт на нём линию — разрыв данных виден как разрыв.
+  const gstep = gridStep(series, step)
+  const timeline = []
+  for (let t = Math.ceil(start / gstep) * gstep; t <= end; t += gstep) timeline.push(t)
+  if (!timeline.length) timeline.push(start, end) // окно уже шага — пусть будет хоть ось
+
+  const t0 = timeline[0]
   const data = [timeline]
   const uSeries = [{}]
   series.forEach((s, i) => {
-    const map = new Map((s.values || []).map(([ts, v]) => [ts, parseFloat(v)]))
-    data.push(timeline.map((t) => (map.has(t) ? map.get(t) : null)))
+    const col = new Array(timeline.length).fill(null)
+    for (const [ts, v] of (s.values || [])) {
+      const k = Math.round((ts - t0) / gstep)
+      if (k >= 0 && k < col.length) col[k] = parseFloat(v)
+    }
+    data.push(col)
     uSeries.push({
       label: labelsStr(s.metric) || `series ${i + 1}`,
       stroke: COLORS[i % COLORS.length],
       width: 1.6,
       points: { show: false },
-      spanGaps: true,
+      spanGaps: false, // нет данных — нет линии (см. выше)
     })
   })
   // Легенда под графиком: цвет + полное имя серии + последнее значение (и номер
-  // запроса, когда их несколько), с управлением видимостью.
-  chartSeries.value = series.map((s, i) => ({
-    qi: s.qi ?? 0,
-    label: labelsStr(s.metric) || `series ${i + 1}`,
-    color: COLORS[i % COLORS.length],
-    value: lastValue(s),
-    show: true,
-  }))
+  // запроса, когда их несколько), с управлением видимостью. Серию, у которой
+  // данные оборвались до конца окна, помечаем временем последней точки — по
+  // легенде сразу видно, какая метрика замолчала и когда.
+  chartSeries.value = series.map((s, i) => {
+    const vals = s.values || []
+    const lastAt = vals.length ? vals[vals.length - 1][0] : null
+    return {
+      qi: s.qi ?? 0,
+      label: labelsStr(s.metric) || `series ${i + 1}`,
+      color: COLORS[i % COLORS.length],
+      value: lastValue(s),
+      show: true,
+      lastAt,
+      stale: lastAt != null && end - lastAt > gstep * 2,
+      lastStamp: lastAt != null ? fmtStamp(lastAt) : '',
+    }
+  })
   seriesMeta = series.map((s) => ({ metric: s.metric || {}, qi: s.qi ?? 0 })) // для тултипа
+  rangeInfo.value = `${fmtStamp(start)} — ${fmtStamp(end)} · шаг ${fmtDur(gstep)}`
 
   await nextTick()
   const width = chartEl.value?.clientWidth || 900
   const axisColor = getCss('--text-mute') || '#888'
   const gridColor = getCss('--border-soft') || 'rgba(128,128,128,0.2)'
+  const axisFont = '11px ' + (getCss('--mono') || 'monospace')
   chart = new uPlot(
     {
       width,
       height: CHART_H,
       series: uSeries,
+      // Ось X держим на запрошенном окне: пустой «хвост» справа — это и есть
+      // ответ «данные кончились тогда-то», его нельзя обрезать под данные.
+      scales: { x: { time: true, range: [start, end] } },
       axes: [
-        { stroke: axisColor, grid: { stroke: gridColor, width: 1 }, ticks: { stroke: gridColor } },
-        { stroke: axisColor, grid: { stroke: gridColor, width: 1 }, ticks: { stroke: gridColor } },
+        {
+          stroke: axisColor,
+          font: axisFont,
+          grid: { stroke: gridColor, width: 1 },
+          ticks: { stroke: gridColor },
+          values: axisTimeValues, // «29.07 14:00» на смене суток, дальше «14:30»
+          space: 90,              // подписи с датой шире — метки реже, без каши
+          size: 34,
+        },
+        { stroke: axisColor, font: axisFont, grid: { stroke: gridColor, width: 1 }, ticks: { stroke: gridColor } },
       ],
       legend: { show: false },       // вместо громоздкой легенды — тултип по наведению
       cursor: { focus: { prox: 30 } },
@@ -903,7 +1039,11 @@ async function drawChart(series) {
   ro.observe(chartEl.value)
 }
 
-function destroyChart() { if (chart) { chart.destroy(); chart = null } chartSeries.value = [] }
+function destroyChart() {
+  if (chart) { chart.destroy(); chart = null }
+  chartSeries.value = []
+  rangeInfo.value = ''
+}
 
 // Показ/скрытие серий из легенды (как в Prometheus):
 //   клик — показать ТОЛЬКО эту серию (повторный клик по ней — показать все);
@@ -1049,8 +1189,13 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
       <div ref="chartEl" class="chart" :style="(chartSeries.length || loading) ? 'min-height:380px' : null"></div>
       <div v-if="!chartSeries.length && !loading" class="empty">Нет данных — выполни запрос.</div>
 
+      <!-- Какой период показан и с каким шагом. Ось X всегда на весь период, даже
+           если данные кончились раньше, — подпись отвечает «докуда вообще график». -->
+      <div v-if="rangeInfo" class="range-info">{{ rangeInfo }}</div>
+
       <!-- Легенда: найденные серии с цветом, полными лейблами и значением
-           (номер запроса — когда выражений несколько) -->
+           (номер запроса — когда выражений несколько). У замолчавшей серии —
+           отметка, когда пришла последняя точка. -->
       <div v-if="chartSeries.length" class="legend">
         <button
           v-for="(s, i) in chartSeries"
@@ -1062,6 +1207,9 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
           <span class="leg-dot" :style="{ background: s.color }"></span>
           <span v-if="multiRun" class="leg-q">q{{ s.qi + 1 }}</span>
           <span class="leg-lab">{{ s.label }}</span>
+          <span v-if="s.stale" class="leg-stale" :title="'последняя точка: ' + s.lastStamp">
+            нет данных с {{ s.lastStamp }}
+          </span>
           <span class="leg-val">{{ s.value }}</span>
         </button>
       </div>
@@ -1305,6 +1453,21 @@ function getCss(name) { return getComputedStyle(document.documentElement).getPro
 .leg.off .leg-lab { text-decoration: line-through; }
 /* Значение серии — прижато вправо, как колонка Value в таблице. */
 .leg-val { margin-left: auto; padding-left: 14px; font-family: var(--mono); font-size: 12px; color: var(--text); white-space: nowrap; user-select: text; cursor: text; }
+/* Серия, у которой данные оборвались раньше конца окна: значение в легенде —
+   старое, и об этом надо сказать прямо, а не оставлять его выглядеть свежим. */
+.leg-stale {
+  margin-left: auto; flex: none;
+  font-family: var(--mono); font-size: 11px; white-space: nowrap;
+  color: var(--text-mute); background: var(--chip);
+  border-radius: 20px; padding: 1px 8px;
+}
+.leg-stale + .leg-val { margin-left: 0; padding-left: 10px; }
+
+/* Подпись под графиком: какой период показан и с каким шагом. */
+.range-info {
+  margin-top: 10px;
+  font-family: var(--mono); font-size: 11px; color: var(--text-mute); text-align: center;
+}
 
 /* Кнопка сброса ширин колонок (появляется, когда что-то тянули мышью). */
 .tbl-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }

@@ -25,6 +25,8 @@ from psycopg2.extras import Json
 from psycopg2.pool import ThreadedConnectionPool
 
 from .. import config
+
+import logging_setup
 from ..models import StoredConfig
 
 log = logging.getLogger("silences.save_hub")
@@ -45,8 +47,12 @@ def _get_pool() -> ThreadedConnectionPool:
             if _pool is None:
                 _pool = ThreadedConnectionPool(1, 10, dsn=config.pg_dsn())
                 # пароль в лог не пишем — только куда подключились
-                log.info("postgres: подключение к %s:%s/%s (пользователь %s)",
-                         config.PG_HOST, config.PG_PORT, config.PG_DB, config.PG_USER or "(из PG_DSN)")
+                # пароль в лог не пишем — только куда подключились
+                logging_setup.event(
+                    log, "storage.pg_connected",
+                    host=config.PG_HOST, port=config.PG_PORT, db=config.PG_DB,
+                    user=config.PG_USER or "(из PG_DSN)",
+                )
     return _pool
 
 
@@ -109,9 +115,12 @@ def ensure_repo() -> None:
             )
             cur.execute("CREATE INDEX IF NOT EXISTS history_env_ts ON history (env, ts DESC);")
         _initialized = True
-        log.info("postgres: схема готова")
+        logging_setup.event(log, "storage.schema_ready", tables=["configs", "history"])
     except Exception as e:
-        log.error("postgres недоступен (повторю позже): %s", e)
+        logging_setup.event(
+            log, "storage.pg_unavailable", level=logging.ERROR,
+            error=str(e), hint="схема не создана, попробую при следующем обращении",
+        )
 
 
 # --- Маппинг строк -----------------------------------------------------------
@@ -274,7 +283,10 @@ def cleanup(history_days: int, old_days: int) -> dict:
         removed["history"] = cur.rowcount
         cur.execute("DELETE FROM configs WHERE deleted_at IS NOT NULL AND deleted_at < %s", (o_cutoff,))
         removed["old"] = cur.rowcount
-    log.info("очистка: история -%d, удалённые -%d", removed["history"], removed["old"])
+    logging_setup.event(
+        log, "storage.cleanup_done",
+        history_removed=removed["history"], deleted_removed=removed["old"],
+    )
     return removed
 
 
@@ -297,7 +309,7 @@ def try_scheduler_lock() -> bool:
             _lock_held = bool(cur.fetchone()[0])
         return _lock_held
     except Exception as e:
-        log.warning("postgres: не удалось взять лок шедулера: %s", e)
+        logging_setup.event(log, "scheduler.lock_failed", level=logging.WARNING, error=str(e))
         return False
 
 
@@ -310,6 +322,6 @@ def release_scheduler_lock() -> None:
         with _lock_conn.cursor() as cur:
             cur.execute("SELECT pg_advisory_unlock(%s)", (_LOCK_KEY,))
     except Exception as e:
-        log.warning("postgres: не удалось отпустить лок шедулера: %s", e)
+        logging_setup.event(log, "scheduler.unlock_failed", level=logging.WARNING, error=str(e))
     finally:
         _lock_held = False

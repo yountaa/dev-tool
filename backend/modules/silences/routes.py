@@ -250,7 +250,11 @@ async def _try_apply_manual(env: str, cfg_id: str, payload: dict, old_am_id: str
     try:
         return await _apply_manual(env, cfg_id, payload, old_am_id)
     except AlertmanagerError as e:
-        log.warning("[%s] не удалось поставить разовый silence %s в AM: %s", env, cfg_id, e)
+        event(
+            log, "silence.apply_failed", level=logging.WARNING,
+            env=env, kind="manual", rule=cfg_id, error=str(e),
+            hint="правило сохранено, шедулер доставит его в Alertmanager позже",
+        )
         return ""
 
 
@@ -268,7 +272,11 @@ async def enable_rule(env: str, kind: str, cfg_id: str, user: str = Depends(curr
         try:
             await scheduler.apply_config(saved)  # ставим сразу, не ждём тика
         except AlertmanagerError as e:
-            log.warning("[%s] не удалось поставить расписание %s в AM: %s", env, cfg_id, e)
+            event(
+                log, "silence.apply_failed", level=logging.WARNING,
+                env=env, kind="schedule", rule=cfg_id, error=str(e),
+                hint="правило сохранено, шедулер доставит его в Alertmanager позже",
+            )
     event(log, "rule.enabled", env=env, kind=kind, id=cfg_id, name=cfg.payload.get("name", ""))
     return {"ok": True}
 
@@ -334,7 +342,11 @@ async def edit_schedule_rule(env: str, cfg_id: str, req: ScheduleRequest, user: 
         try:
             await scheduler.apply_config(saved)   # и сразу ставим с новыми
         except AlertmanagerError as e:
-            log.warning("[%s] не удалось переставить расписание %s в AM: %s", env, cfg_id, e)
+            event(
+                log, "silence.reapply_failed", level=logging.WARNING,
+                env=env, kind="schedule", rule=cfg_id, error=str(e),
+                hint="правило сохранено, шедулер переставит его в Alertmanager позже",
+            )
     event(log, "rule.updated", env=env, kind="schedule", id=cfg_id, name=req.name)
     return {"ok": True}
 

@@ -13,22 +13,32 @@ from access import log_config as log_auth_config, request_log_fields, router as 
 from share import router as share_router
 from modules.alerts import storage as alerts_storage
 from modules.alerts.routes import router as alerts_router
+from modules.silences import config as silences_config
 from modules.silences import save_hub
 from modules.silences.client import AlertmanagerError
 from modules.silences.routes import router as silences_router
 from modules.silences.schedule import scheduler
+from modules.victoria import config as victoria_config
 from modules.victoria.client import VictoriaError
 from modules.victoria.routes import router as victoria_router
 
 logging_setup.setup()  # NDJSON в stdout
-log = logging.getLogger("silences.app")
-access_log = logging.getLogger("silences.access")
+# module в логе = первый сегмент имени логгера. У этих двух он общий, не модульный:
+# «app» — жизненный цикл приложения, «http» — ошибки запросов (там модуль
+# проставляется отдельно, по пути запроса).
+log = logging.getLogger("app")
+access_log = logging.getLogger("http")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """На старте: показать настройки авторизации, подготовить папку правил, шедулер."""
-    log_auth_config()  # действующие AUTH_/RBAC_ настройки — первым делом в лог
+    # Первым делом — действующая конфигурация: по этим строкам видно, что модуль
+    # прочитал из окружения (и появятся ли вообще его вкладки). Пишем их здесь,
+    # а не при импорте модулей: до setup() форматтер ещё не установлен.
+    log_auth_config()             # AUTH_/RBAC_
+    silences_config.log_config()  # окружения Alertmanager, хранилище
+    victoria_config.log_config()  # кластеры VM и их под-вкладки
     save_hub.ensure_repo()
     alerts_storage.ensure_schema()  # alerts_history / alerts_meta (не ломает silences)
     scheduler.start()
@@ -50,10 +60,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def _service_of(path: str) -> str:
-    """Какой внутренний модуль (сервис) обслуживает путь — для поля service в логах.
-    Берём первый сегмент пути: /victoria/... → victoria, /access/me → access и т.д.
-    Так по строке лога сразу видно, чей роут отработал."""
+def _module_of(path: str) -> str:
+    """Какой модуль обслуживает путь — для поля module в логах.
+    Берём первый сегмент пути: /victoria/... → victoria, /access/me → access.
+    Так ошибка запроса попадает в тот же фильтр по module, что и логи самого модуля."""
     seg = path.lstrip("/").split("/", 1)[0]
     return seg or "root"
 
@@ -64,10 +74,11 @@ async def log_requests(request: Request, call_next):
 
     Штатные 2xx/3xx не пишем — их поток большой (вкладки часто дёргают прокси), и в
     логе от них один шум. Полная картина остаётся и без них: настройки сервиса на
-    старте (auth.config), решения RBAC/авторизации (auth.*) и вот эти ошибки. В
-    каждой строке — service=<модуль>, чтобы сразу знать, чей роут ответил ошибкой,
-    плюс кто пришёл (user/auth_hdr/groups_n) для разбора.
-    (Атрибуция «кто что сделал» живёт в git-коммитах модулей, а не в этих логах —
+    старте (auth.config), решения RBAC/авторизации (auth.*), собственные события
+    модулей и вот эти ошибки. В каждой строке — module=<модуль>, чтобы ошибка
+    запроса попадала в тот же фильтр, что и логи самого модуля, плюс кто пришёл
+    (user/auth_hdr/groups_n) для разбора.
+    (Атрибуция «кто что сделал» живёт в журнале истории модулей, а не в этих логах —
     поэтому отказ от строки на каждый запрос её не теряет.)
     """
     start = time.perf_counter()
@@ -76,7 +87,7 @@ async def log_requests(request: Request, call_next):
         logging_setup.event(
             access_log, "http.error",
             level=logging.WARNING if response.status_code < 500 else logging.ERROR,
-            service=_service_of(request.url.path),
+            module=_module_of(request.url.path),
             method=request.method,
             path=request.url.path,
             status=response.status_code,

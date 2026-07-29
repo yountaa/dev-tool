@@ -10,6 +10,8 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+import logging_setup
+
 from .. import config, save_hub
 from ..am_format import parse_comment, same_silence, tag_comment
 from ..client import AlertmanagerError, active_silences, create_silence
@@ -17,6 +19,7 @@ from ..models import ManualRequest, ScheduleRequest
 from ..manual.builder import build_manual
 from .builder import build_schedule
 
+# module в логе = silences (первый сегмент имени логгера).
 log = logging.getLogger("silences.scheduler")
 
 scheduler = AsyncIOScheduler(timezone=config.SILENCE_TZ)
@@ -41,7 +44,10 @@ async def apply_config(cfg) -> None:
             to_create.append(body)
     if to_create:
         await asyncio.gather(*(create_silence(cfg.env, b) for b in to_create))
-        log.info("[%s] поставлено %d silence по расписанию %s", cfg.env, len(to_create), cfg.id)
+        logging_setup.event(
+            log, "silence.schedule_applied",
+            env=cfg.env, rule=cfg.id, name=req.name, created=len(to_create),
+        )
 
 
 async def reconcile_manual(cfg) -> None:
@@ -66,7 +72,11 @@ async def reconcile_manual(cfg) -> None:
     am_id = await create_silence(cfg.env, body)
     save_hub.save("manual", cfg.env, cfg.payload, cfg_id=cfg.id,
                   enabled=True, am_id=am_id, created_at=cfg.created_at, actor="scheduler", action="доставил")
-    log.info("[%s] до-ставлен разовый silence %s", cfg.env, cfg.id)
+    logging_setup.event(
+        log, "silence.manual_recovered",
+        env=cfg.env, rule=cfg.id, am_id=am_id,
+        hint="разовый silence отсутствовал в Alertmanager и поставлен заново",
+    )
 
 
 async def run_once() -> None:
@@ -78,7 +88,7 @@ async def run_once() -> None:
     """
     save_hub.ensure_repo()
     if not save_hub.try_scheduler_lock():
-        log.info("тик пропущен — лок занят другой нодой")
+        logging_setup.event(log, "scheduler.tick_skipped", reason="лок занят другой нодой")
         return  # тик выполняет другая нода
     try:
         for cfg in save_hub.list_configs("schedule"):
@@ -86,13 +96,21 @@ async def run_once() -> None:
                 try:
                     await apply_config(cfg)
                 except AlertmanagerError as e:
-                    log.warning("[%s] AM недоступен, повторю позже: %s", cfg.env, e)
+                    logging_setup.event(
+                        log, "scheduler.apply_failed", level=logging.WARNING,
+                        env=cfg.env, kind="schedule", rule=cfg.id, error=str(e),
+                        hint="Alertmanager недоступен, правило будет доставлено следующим тиком",
+                    )
         for cfg in save_hub.list_configs("manual"):
             if cfg.enabled:
                 try:
                     await reconcile_manual(cfg)
                 except AlertmanagerError as e:
-                    log.warning("[%s] AM недоступен, повторю позже: %s", cfg.env, e)
+                    logging_setup.event(
+                        log, "scheduler.apply_failed", level=logging.WARNING,
+                        env=cfg.env, kind="manual", rule=cfg.id, error=str(e),
+                        hint="Alertmanager недоступен, правило будет доставлено следующим тиком",
+                    )
     finally:
         save_hub.release_scheduler_lock()
 
@@ -120,4 +138,7 @@ def start() -> None:
         replace_existing=True,
     )
     scheduler.start()
-    log.info("шедулер запущен, cron=%s, очистка=%s", config.SILENCE_CRON, config.CLEANUP_CRON)
+    logging_setup.event(
+        log, "scheduler.started",
+        cron=config.SILENCE_CRON, cleanup_cron=config.CLEANUP_CRON, tz=config.SILENCE_TZ,
+    )

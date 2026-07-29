@@ -26,11 +26,17 @@ overhead — цепочка nginx → oauth2-proxy → бэкенд, остал�
 from __future__ import annotations
 
 import json
+import logging
 import time
 
 import httpx
 
+import logging_setup
+
 from .config import TENANTS, VMAGENT, VMALERT, VMSELECT
+
+# module в логе = victoria (первый сегмент имени логгера).
+log = logging.getLogger("victoria.client")
 
 # read 30 с — запросы к метрикам бывают тяжёлыми; connect 3 с — чтобы недоступная
 # нода не подвешивала весь запрос перед переходом к следующей (HA).
@@ -97,13 +103,28 @@ async def _get_raw(base: str, path: str, params: dict | None = None) -> bytes:
 
 
 async def _first(nodes: list[str], path: str, params: dict | None = None) -> bytes:
-    """Запрос к первой живой ноде из списка; если упали все — ошибка."""
+    """Запрос к первой живой ноде из списка; если упали все — ошибка.
+
+    Каждую павшую ноду логируем: при HA интерфейс продолжает работать со второй
+    ноды, и без этой строки мёртвая первая нода не видна вообще — узнаёшь о ней,
+    когда упадут обе.
+    """
     errors = []
     for base in nodes:
         try:
-            return await _get_raw(base, path, params)
+            data = await _get_raw(base, path, params)
+            if errors:  # дошли не с первой — скажем, кто именно молчал
+                logging_setup.event(
+                    log, "vm.node_failed", level=logging.WARNING,
+                    path=path, used=base, failed=errors,
+                )
+            return data
         except VictoriaError as e:
             errors.append(str(e))
+    logging_setup.event(
+        log, "vm.all_nodes_failed", level=logging.ERROR,
+        path=path, nodes=nodes, errors=errors,
+    )
     raise VictoriaError("; ".join(errors) or "нет нод")
 
 

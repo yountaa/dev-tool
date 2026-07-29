@@ -1,6 +1,6 @@
-# Белый список: по умолчанию в git НИЧЕГО не идёт — только backend/, frontend/
-# и .env.example. Всё остальное на верхнем уровне (README, docker-compose,
-# prometheus.yml, auth/, .env.prod, data/ и пр.) в репозиторий не попадает.
+# Белый список: по умолчанию в git НИЧЕГО не идёт — только код, документация и
+# .env.example. Всё остальное на верхнем уровне (docker-compose, prometheus.yml,
+# auth/, .env, .env.prod, data/ и пр.) в репозиторий не попадает.
 /*
 
 # ...кроме нужного:
@@ -8,6 +8,9 @@
 !/.env.example
 !/backend/
 !/frontend/
+# Документация — единственный источник правды по проекту, едет вместе с кодом.
+!/README.md
+!/docs/
 
 # Внутри backend/ и frontend/ — исключаем мусор сборки, кэши и секреты:
 __pycache__/

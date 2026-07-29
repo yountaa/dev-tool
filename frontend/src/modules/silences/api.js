@@ -11,7 +11,7 @@ export const silencesApi = {
   // локальная история действий (вкладка «History»): кто/что/когда + было/стало
   history: (env) => http.get(`/silences/${env}/history`),
 
-  // локальные правила (источник правды — git-хаб, не Alertmanager)
+  // локальные правила (источник правды — наше хранилище, не Alertmanager)
   rules: (env) => http.get(`/silences/${env}/rules`),
   enableRule: (env, kind, id) => http.post(`/silences/${env}/rules/${kind}/${id}/enable`),
   disableRule: (env, kind, id) => http.post(`/silences/${env}/rules/${kind}/${id}/disable`),

@@ -17,6 +17,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .. import config
+
+import logging_setup
 from ..models import StoredConfig
 
 log = logging.getLogger("silences.save_hub")
@@ -283,7 +285,10 @@ def list_configs(kind: str, env: str | None = None) -> list[StoredConfig]:
             try:
                 result.append(StoredConfig.model_validate_json(file.read_text(encoding="utf-8")))
             except Exception as ex:
-                log.warning("пропускаю нечитаемый конфиг %s: %s", file, ex)
+                logging_setup.event(
+                    log, "storage.bad_config_file", level=logging.WARNING,
+                    file=str(file), error=str(ex), hint="файл пропущен, правило не показано в вебе",
+                )
     return result
 
 
@@ -319,7 +324,10 @@ def _record(env: str, user: str, action: str, kind: str, name: str,
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception as e:
-        log.warning("история: не записал запись (%s/%s): %s", env, name, e)
+        logging_setup.event(
+            log, "storage.history_write_failed", level=logging.WARNING,
+            env=env, name=name, error=str(e),
+        )
 
 
 def history(env: str, limit: int = 500) -> list[dict]:
@@ -380,7 +388,10 @@ def cleanup(history_days: int, old_days: int) -> dict:
                             d.rmdir()
                     except Exception:
                         pass
-    log.info("очистка: история -%d, архив -%d", removed["history"], removed["old"])
+    logging_setup.event(
+        log, "storage.cleanup_done",
+        history_removed=removed["history"], deleted_removed=removed["old"],
+    )
     return removed
 
 

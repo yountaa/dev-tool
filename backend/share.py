@@ -27,6 +27,8 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
+import logging_setup
+
 # PG-креды и выбор бэкенда общие для всего приложения — живут в silences.config
 # (STORAGE_BACKEND, PG_DSN/PG_HOST/...). Отдельный конфиг не заводим.
 from modules.silences import config as storage_config
@@ -128,7 +130,10 @@ def create(payload: SharePayload):
         else:
             _local_save(link_id, path)
     except Exception as e:
-        log.error("не удалось сохранить короткую ссылку: %s", e)
+        logging_setup.event(
+            log, "share.save_failed", level=logging.ERROR,
+            backend="postgres" if USE_PG else "local", error=str(e),
+        )
         raise HTTPException(status_code=503, detail=f"хранилище ссылок недоступно: {e}")
     return {"id": link_id}
 
@@ -139,7 +144,10 @@ def resolve(link_id: str):
     try:
         path = _pg_get(link_id) if USE_PG else _local_load().get(link_id)
     except Exception as e:
-        log.error("не удалось прочитать короткую ссылку: %s", e)
+        logging_setup.event(
+            log, "share.read_failed", level=logging.ERROR,
+            backend="postgres" if USE_PG else "local", link=link_id, error=str(e),
+        )
         raise HTTPException(status_code=503, detail=f"хранилище ссылок недоступно: {e}")
     if not path:
         raise HTTPException(status_code=404, detail="ссылка не найдена или устарела")

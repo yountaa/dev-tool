@@ -15,19 +15,24 @@ import logging
 
 from . import config
 
+import logging_setup
+
 log = logging.getLogger("silences.save_hub")
 
 # Выбираем бэкенд по переменной. Импортируем ленивно — чтобы в режиме local не
 # тянуть psycopg2 (и наоборот). Неизвестное значение → local (безопасный дефолт).
 if config.STORAGE_BACKEND == "postgres":
     from .storage import postgres as _be
-    log.info("хранилище: Postgres")
+    logging_setup.event(log, "storage.selected", backend="postgres")
 else:
     from .storage import local as _be
     if config.STORAGE_BACKEND != "local":
-        log.warning("неизвестный STORAGE_BACKEND=%s — работаю как local", config.STORAGE_BACKEND)
+        logging_setup.event(
+            log, "storage.unknown_backend", level=logging.WARNING,
+            value=config.STORAGE_BACKEND, hint="ожидается local или postgres, работаю как local",
+        )
     else:
-        log.info("хранилище: локальное (git/файлы)")
+        logging_setup.event(log, "storage.selected", backend="local", path=str(config.GIT_LOCAL_DIR))
 
 
 # --- Проброс вызовов в выбранный бэкенд --------------------------------------

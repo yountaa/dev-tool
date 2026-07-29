@@ -44,8 +44,11 @@ import os
 
 from dotenv import load_dotenv
 
+import logging_setup
+
 load_dotenv()  # подхватит .env рядом, если есть
 
+# module в логе = victoria (первый сегмент имени логгера).
 log = logging.getLogger("victoria.config")
 
 
@@ -77,13 +80,20 @@ for _key, _value in os.environ.items():
             VMSELECT[_rest] = _urls(_value)
 
 
+# Замечания к конфигурации копим здесь и пишем в лог на СТАРТЕ, а не прямо тут:
+# этот файл выполняется при импорте, то есть до logging_setup.setup(), и строка
+# ушла бы мимо JSON-форматтера — без полей и без module.
+_ISSUES: list[tuple[str, dict]] = []
+
 # Кластер заявлен и как простой, и с тенантами — берём мультитенантный, простой убираем.
 for _c in set(VMSELECT) & set(TENANTS):
     VMSELECT.pop(_c, None)
-    log.warning(
-        "vm_%s задан и как простой кластер, и с тенантами (vm_%s__...) — оставляю "
-        "мультитенантный вариант; убери лишнюю переменную", _c, _c,
-    )
+    _ISSUES.append(("vm.cluster_conflict", {
+        "cluster": _c,
+        "tenants": sorted(TENANTS[_c]),
+        "hint": f"vm_{_c} задан и как простой кластер, и как vm_{_c}__<тенант>; "
+                f"оставлен мультитенантный вариант, убери лишнюю переменную",
+    }))
 
 # Кластеры = где есть vmselect (простой или тенантный).
 ENVIRONMENTS: list[str] = sorted(set(VMSELECT) | set(TENANTS))
@@ -91,10 +101,26 @@ ENVIRONMENTS: list[str] = sorted(set(VMSELECT) | set(TENANTS))
 # Предупредим, если vmagent/vmalert заданы для несуществующего кластера (опечатка).
 for _name in list(VMAGENT) + list(VMALERT):
     if _name not in VMSELECT and _name not in TENANTS:
-        log.warning(
-            "vmagent_/vmalert_%s задан, но кластера vm_%s нет — проверь имя; "
-            "компонент не подключится", _name, _name,
-        )
+        _ISSUES.append(("vm.orphan_component", {
+            "cluster": _name,
+            "known_clusters": ENVIRONMENTS,
+            "hint": f"vmagent_{_name}/vmalert_{_name} задан, но кластера vm_{_name} нет — "
+                    f"проверь имя, компонент не подключится",
+        }))
+
+
+def log_config() -> None:
+    """Что прочитано из окружения — одной строкой на старте: сразу видно, появится
+    ли вкладка и какие под-вкладки у неё будут. Следом — замечания к конфигурации."""
+    logging_setup.event(
+        log, "vm.config",
+        clusters=ENVIRONMENTS,
+        tenants={c: sorted(t) for c, t in TENANTS.items()},
+        with_targets=sorted(VMAGENT),
+        with_rules=sorted(VMALERT),
+    )
+    for name, fields in _ISSUES:
+        logging_setup.event(log, name, level=logging.WARNING, **fields)
 
 
 def known_env(env: str) -> bool:

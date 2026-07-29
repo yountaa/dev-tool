@@ -7,9 +7,16 @@ vmalert задаются списком. Чтение собираем со вс
 """
 from __future__ import annotations  # dict | None на Python 3.9
 
+import logging
+
 import httpx
 
+import logging_setup
+
 from .config import ALERTMANAGERS, RULE_SOURCES
+
+# module в логе = silences (первый сегмент имени логгера).
+log = logging.getLogger("silences.client")
 
 _TIMEOUT = httpx.Timeout(10.0)  # таймаут запроса
 
@@ -51,7 +58,11 @@ async def _request(method: str, base: str, path: str, json: dict | None = None) 
 
 
 async def _read_all(nodes: list[str], path: str, params: dict | None = None) -> list[list]:
-    """GET со всех нод; недоступные пропускаем. Если упали ВСЕ — кидаем ошибку."""
+    """GET со всех нод; недоступные пропускаем. Если упали ВСЕ — кидаем ошибку.
+
+    Часть нод молчит — данные всё равно отдаём (для этого HA и нужен), но пишем
+    предупреждение: иначе интерфейс выглядит здоровым, а половина кластера лежит.
+    """
     out, errors = [], []
     for base in nodes:
         try:
@@ -63,7 +74,16 @@ async def _read_all(nodes: list[str], path: str, params: dict | None = None) -> 
         except httpx.HTTPError as e:
             errors.append(f"{base}: {e}")
     if not out and errors:
+        logging_setup.event(
+            log, "am.all_nodes_failed", level=logging.ERROR,
+            path=path, nodes=nodes, errors=errors,
+        )
         raise AlertmanagerError("; ".join(errors))
+    if errors:
+        logging_setup.event(
+            log, "am.node_failed", level=logging.WARNING,
+            path=path, alive=len(out), total=len(nodes), errors=errors,
+        )
     return out
 
 
@@ -81,12 +101,20 @@ def _dedup(items, key) -> list:
 
 async def _post_first(env: str, path: str, json: dict | None = None) -> httpx.Response:
     """Запрос на первую живую ноду AM (для записи; кластер разнесёт сам)."""
+    nodes = _am_nodes(env)
     last: Exception | None = None
-    for base in _am_nodes(env):
+    errors = []
+    for base in nodes:
         try:
             return await _request("POST" if json is not None else "DELETE", base, path, json=json)
         except AlertmanagerError as e:
             last = e
+            errors.append(str(e))
+    # Запись не прошла НИ НА ОДНУ ноду — silence не поставлен, это надо видеть.
+    logging_setup.event(
+        log, "am.write_failed", level=logging.ERROR,
+        env=env, path=path, nodes=nodes, errors=errors,
+    )
     raise last or AlertmanagerError(f"нет живых нод AM для {env}")
 
 
