@@ -86,11 +86,16 @@ async function shareLink() {
 <template>
   <div class="app">
     <nav class="rail">
-      <!-- Имя сервиса -->
+      <!-- Имя сервиса. Эмблема — буква «O» из Observability: кольцо-апертура, сквозь
+           которое идёт линия метрики. Линия построена точечно-симметрично относительно
+           центра круга (12,12): концы на 6 и 18, пик и провал на ±1.2 от центра и на
+           ±4.4 по вертикали — иначе знак заваливается набок. Рисуется currentColor,
+           поэтому перекрашивается вместе с цвет-пространством активной вкладки.
+           При правке держи симметрию и повтори её в public/favicon.svg. -->
       <div class="brand">
         <span class="brand-logo">
           <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 7l9-4 9 4-9 4-9-4Z" /><path d="M3 12l9 4 9-4" /><path d="M3 17l9 4 9-4" />
+            <circle cx="12" cy="12" r="9" /><path d="M6 12h3.2l1.6-4.4 2.4 8.8 1.6-4.4H18" />
           </svg>
         </span>
         <span class="brand-name">Observability tool</span>

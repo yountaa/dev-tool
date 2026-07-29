@@ -185,7 +185,6 @@ Postgres по `PG_*`. Без настроенного Postgres модуль ра
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Полная схема, модули, потоки данных |
 | [MODULES.md](docs/MODULES.md) | Как добавить модуль |
 | [UI.md](docs/UI.md) | Шрифты, палитра, компоненты |
-| [VICTORIA.md](docs/VICTORIA.md) | Модуль victoria в деталях |
 | [RBAC.md](docs/RBAC.md) | Авторизация и доступ к вкладкам |
 | [AUTH.md](docs/AUTH.md) | Настройка Keycloak, oauth2-proxy, внешнего nginx |
 | [STORAGE.md](docs/STORAGE.md) | Хранилище и таблицы |
