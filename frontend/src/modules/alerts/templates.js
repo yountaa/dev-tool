@@ -29,9 +29,12 @@ export const TEMPLATES = {
       thresholdMinutes: 3, repeatMinutes: 15, notifyRecovery: true, forceSend: false,
       standbyMarker: '', ignorePatterns: [], scopeHours: 24, lookbackHits: 50, maxHosts: 100,
     },
-    notify: { alertId: '', title: '', subjectTemplate: '{{title}} · {{host}}', timezone: 'Europe/Moscow' },
+    notify: {
+      alertId: '', title: '', subjectTemplate: '{{title}} · {{host}}',
+      helpUrl: '', helpLabel: 'инструкция', timezone: 'Europe/Moscow',
+    },
     delivery: { email: { from: 'noreply-n8nalerts@hoff.ru', to: [] } },
-    presentation: { layout: 'card' },
+    presentation: { layout: 'card', silenceHiddenRows: [] },
   }),
   any: () => ({
     schemaVersion: 3, id: '', type: 'any', enabled: false,

@@ -10,7 +10,8 @@
 //   starts_with      — префикс (prefix)
 //   one_of           — любое из списка (terms), value — массив
 //   exists / missing — поле заполнено / пустое
-//   regex            — регулярное выражение (regexp)
+//   regex (UI: matches) — подстрока/фраза через query_string (как contains).
+//                      Раньше был ES regexp — на analyzed text и кириллице ломался.
 //
 // Всё, что не раскладывается в этот набор, остаётся сырым JSON.
 
@@ -20,7 +21,7 @@ var OPS = [
   { op: 'contains', label: 'содержит', needsValue: true },
   { op: 'starts_with', label: 'начинается с', needsValue: true },
   { op: 'one_of', label: 'одно из', needsValue: true, multi: true },
-  { op: 'regex', label: 'регулярное выражение', needsValue: true },
+  { op: 'regex', label: 'совпадает (фраза)', needsValue: true },
   { op: 'exists', label: 'заполнено', needsValue: false },
   { op: 'missing', label: 'пустое', needsValue: false }
 ];
@@ -158,7 +159,8 @@ function conditionToClause(c) {
     case 'contains': return { clause: containsClause(field, v) };
     case 'starts_with': return { clause: { prefix: { [field]: v } } };
     case 'matches_phrase': return { clause: containsClause(field, v) }; // legacy op → contains
-    case 'regex': return { clause: { regexp: { [field]: v } } };
+    // UI «matches»: фраза/подстрока, не Lucene regexp (regexp оставляйте в Query DSL).
+    case 'regex': return { clause: containsClause(field, v) };
     case 'one_of': return { clause: { terms: { [field]: Array.isArray(v) ? v : [v] } } };
     case 'exists': return { clause: { exists: { field: field } } };
     case 'missing': return { clause: { exists: { field: field } }, negate: true };

@@ -34,7 +34,8 @@ function clausePreview(c) {
   if (op === 'contains') return `${c.field}: "${v}"`
   if (op === 'starts_with') return `${c.field}: ${v}*`
   if (op === 'one_of') return `${c.field}: (${v})`
-  if (op === 'regex') return `${c.field}: /${v}/`
+  // matches = contains (фраза), не /regexp/
+  if (op === 'regex') return `${c.field}: "${v}"`
   return `${c.field} ${opLabel(op)} ${v}`
 }
 

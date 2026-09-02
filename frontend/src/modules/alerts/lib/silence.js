@@ -5,6 +5,27 @@ function normText(s) {
   return String(s == null ? '' : s).replace(/["\u201C\u201D']/g, '').toLowerCase();
 }
 
+function getPath(obj, path) {
+  if (obj == null) return undefined;
+  if (!path) return obj;
+  // Сначала целый ключ («host.name» как поле), иначе вложенный путь host → name.
+  if (Object.prototype.hasOwnProperty.call(obj, path)) return obj[path];
+  return path.split('.').reduce((a, k) => (a == null ? undefined : a[k]), obj);
+}
+
+/** Путь ES (message, host.name) vs произвольный текст для письма. */
+function isEsFieldPath(s) {
+  const v = String(s == null ? '' : s).trim();
+  return v !== '' && /^[@A-Za-z_][@A-Za-z0-9_.*-]*$/.test(v);
+}
+
+function resolveMessageField(r) {
+  const raw = String((r && r.messageField) != null ? r.messageField : 'message').trim() || 'message';
+  if (isEsFieldPath(raw)) return { field: raw, fallbackText: '' };
+  // Проза в «Поле с текстом лога» — текст в письме; лог читаем из message.
+  return { field: 'message', fallbackText: raw };
+}
+
 function isNoise(msg, patterns) {
   const m = normText(msg);
   return (patterns || []).some((p) => {
@@ -19,7 +40,8 @@ function inspectHost(bucket, cfg, now) {
   const s = cfg.source || {};
   const r = cfg.rule || {};
   const timeField = s.timeField || '@timestamp';
-  const messageField = r.messageField || 'message';
+  const msgRef = resolveMessageField(r);
+  const messageField = msgRef.field;
   const patterns = r.ignorePatterns || [];
   const marker = normText(r.standbyMarker || '');
   const thresholdMs = Number(r.thresholdMinutes || 3) * 60000;
@@ -29,8 +51,11 @@ function inspectHost(bucket, cfg, now) {
   const hasDoc = !!newest;
   const src = hasDoc ? (newest._source || {}) : {};
 
-  const lastTs = src[timeField] || null;
-  const lastMsg = src[messageField] == null ? '' : src[messageField];
+  const lastTs = getPath(src, timeField) || null;
+  const rawLast = getPath(src, messageField);
+  const lastMsg = rawLast == null || rawLast === ''
+    ? (msgRef.fallbackText || '')
+    : rawLast;
   const lastMs = lastTs ? Date.parse(lastTs) : NaN;
   const ageMs = Number.isNaN(lastMs) ? Infinity : now - lastMs;
   const ageMin = ageMs === Infinity ? null : Math.floor(ageMs / 60000);
@@ -39,12 +64,15 @@ function inspectHost(bucket, cfg, now) {
   let signalTs = null;
   let signalFound = false;
   for (const h of hits) {
-    const m = (h._source || {})[messageField];
+    const m = getPath(h._source || {}, messageField);
     if (isNoise(m, patterns)) continue;
-    signalMsg = m == null ? '' : m;
-    signalTs = (h._source || {})[timeField] || null;
+    signalMsg = m == null || m === '' ? (msgRef.fallbackText || '') : m;
+    signalTs = getPath(h._source || {}, timeField) || null;
     signalFound = true;
     break;
+  }
+  if (!signalFound && msgRef.fallbackText) {
+    signalMsg = msgRef.fallbackText;
   }
 
   const isStandby = signalFound && marker !== '' && normText(signalMsg).includes(marker);
@@ -52,7 +80,8 @@ function inspectHost(bucket, cfg, now) {
 
   return { host: bucket.key, hasDoc: hasDoc, lastTs: lastTs, lastMsg: lastMsg, ageMin: ageMin,
     signalFound: signalFound, signalTs: signalTs, signalMsg: signalMsg,
-    isStandby: isStandby, isDown: isDown, lastWasNoise: hasDoc && isNoise(lastMsg, patterns) };
+    isStandby: isStandby, isDown: isDown, lastWasNoise: hasDoc && isNoise(getPath(src, messageField), patterns),
+    fallbackText: msgRef.fallbackText || '', lastSource: src };
 }
 
 // Решение по узлу с учётом предыдущего состояния и подавления повторов.

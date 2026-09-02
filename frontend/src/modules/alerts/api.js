@@ -1,5 +1,5 @@
 // Клиент: конфиги/preview → n8n (/webhook/alerts);
-// история и кэш engine → FastAPI + Postgres (/alerts/*).
+// история, кэш engine и lookup fields/indices → FastAPI + Postgres (/alerts/*).
 import { http } from '../../shared/api.js'
 
 const ENDPOINT = '/webhook/alerts'
@@ -132,6 +132,7 @@ function collectIndexPatterns(alerts, remote = []) {
 export function historySnapshot(cfg, extra = {}) {
   if (!cfg || typeof cfg !== 'object') return { ...extra }
   const email = cfg.delivery?.email || {}
+  const sw = cfg.schedule?.sendWindow
   return {
     name: extra.name ?? cfg.notify?.title ?? '',
     alertKey: extra.alertKey ?? cfg.id ?? '',
@@ -147,6 +148,7 @@ export function historySnapshot(cfg, extra = {}) {
       alertId: cfg.notify?.alertId || '',
       title: cfg.notify?.title || '',
       subjectTemplate: cfg.notify?.subjectTemplate || '',
+      helpUrl: cfg.notify?.helpUrl || '',
     },
     delivery: {
       from: email.from || '',
@@ -155,6 +157,15 @@ export function historySnapshot(cfg, extra = {}) {
     schedule: {
       intervalMinutes: cfg.schedule?.intervalMinutes,
       trigger: cfg.schedule?.trigger || 'interval',
+      sendWindow: sw?.enabled
+        ? {
+          enabled: true,
+          days: sw.days || [],
+          from: sw.from || '',
+          to: sw.to || '',
+          timezone: sw.timezone || '',
+        }
+        : { enabled: false },
     },
     rule: cfg.rule ? {
       minCount: cfg.rule.minCount,
@@ -162,9 +173,14 @@ export function historySnapshot(cfg, extra = {}) {
       groupBy: cfg.rule.groupBy,
       emptyPolicy: cfg.rule.emptyPolicy,
       thresholdMinutes: cfg.rule.thresholdMinutes,
+      repeatMinutes: cfg.rule.repeatMinutes,
+      hostField: cfg.rule.hostField,
+      messageField: cfg.rule.messageField,
+      standbyMarker: cfg.rule.standbyMarker,
     } : undefined,
     presentation: cfg.presentation ? {
       layout: cfg.presentation.layout,
+      silenceHiddenRows: cfg.presentation.silenceHiddenRows,
     } : undefined,
   }
 }
@@ -188,7 +204,8 @@ export const api = {
   preview: async (config) => shapePreview(await call('preview', { config })),
 
   fields: async (index) => {
-    const data = await call('fields', { body: { index: String(index || '').trim() } })
+    // Через FastAPI → Postgres TTL-кэш → n8n/ELK (не бьём ELK на каждый фокус).
+    const data = await http.post(`${META}/fields`, { index: String(index || '').trim() })
     const raw = (data && (data.fields || data.names || data.fieldNames)) || []
     return [...new Set(
       raw.map((f) => (typeof f === 'string' ? f : f?.name || f?.field || '')).filter(Boolean),
@@ -196,11 +213,11 @@ export const api = {
   },
 
   /**
-   * Живой поиск индексов/паттернов в ELK через n8n (action: indices).
+   * Живой поиск индексов/паттернов: FastAPI кэш → n8n action: indices.
    * q — префикс/подстрока; пустая строка → популярные/все (лимит на стороне n8n).
    */
   searchIndices: async (q = '') => {
-    const data = await call('indices', { body: { q: String(q || '').trim() } })
+    const data = await http.post(`${META}/indices`, { q: String(q || '').trim() })
     const remote = data.patterns || data.indices || data.names || []
     return [...new Set(remote.map(String).filter(Boolean))]
       .sort((a, b) => a.localeCompare(b))
@@ -280,5 +297,42 @@ export const api = {
     } catch {
       return null
     }
+  },
+
+  // --- Папки (Postgres-only, не в n8n-конфиге) --------------------------------
+
+  listFolders: async () => {
+    try {
+      const data = await http.get(`${META}/folders`)
+      return data.folders || []
+    } catch {
+      return []
+    }
+  },
+
+  createFolder: async (name) => {
+    const data = await http.post(`${META}/folders`, { name })
+    if (data?.ok === false) throw new Error(data.detail || 'не удалось создать папку')
+    return data.folder
+  },
+
+  renameFolder: async (id, name) => {
+    const data = await http.patch(`${META}/folders/${id}`, { name })
+    if (data?.ok === false) throw new Error(data.detail || 'не удалось переименовать')
+    return data.folder
+  },
+
+  deleteFolder: async (id) => {
+    const data = await http.del(`${META}/folders/${id}`)
+    return !!data?.ok
+  },
+
+  moveAlert: async (alertKey, folderId) => {
+    const data = await http.put(`${META}/folders/move`, {
+      alertKey,
+      folderId: folderId == null ? null : Number(folderId),
+    })
+    if (data?.ok === false) throw new Error('не удалось переместить алерт')
+    return data
   },
 }

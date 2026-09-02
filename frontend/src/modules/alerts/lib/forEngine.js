@@ -14,7 +14,10 @@ export function forEngine(cfg) {
 
   const digest = { ...(out.digest || {}) }
   for (const k of NOTIFY_KEYS) {
-    if (notify[k] !== undefined && notify[k] !== '') digest[k] = notify[k]
+    if (notify[k] === undefined) continue
+    // Пустая строка должна сбрасывать digest.*, иначе старый helpUrl остаётся в n8n.
+    if (notify[k] !== '') digest[k] = notify[k]
+    else delete digest[k]
   }
 
   if (type === 'silence') {

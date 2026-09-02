@@ -1,11 +1,12 @@
-"""Postgres-хранилище метаданных модуля alerts (история + статус engine).
+"""Postgres-хранилище метаданных модуля alerts.
 
-Отдельные таблицы alerts_history / alerts_meta — не трогаем configs/history silences.
-Если Postgres недоступен или не настроен — методы тихо возвращают пустое
-(модуль alerts во фронте всё равно ходит в n8n за конфигами).
+Отдельные таблицы alerts_* — чужих (configs/history silences) не трогаем.
+Креды — из общего PG_* через config (→ silences.config).
+БД недоступна — методы тихо возвращают пустое; модуль работает без истории/кэша.
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from contextlib import contextmanager
@@ -13,6 +14,9 @@ from datetime import datetime, timedelta, timezone
 
 from psycopg2.extras import Json
 from psycopg2.pool import ThreadedConnectionPool
+
+import logging_setup
+from modules.silences import config as storage_config
 
 from . import config
 
@@ -33,13 +37,20 @@ def _get_pool() -> ThreadedConnectionPool | None:
             if _pool is None:
                 try:
                     _pool = ThreadedConnectionPool(1, 5, dsn=config.pg_dsn())
-                    log.info(
-                        "alerts/postgres: %s:%s/%s",
-                        config.PG_HOST, config.PG_PORT, config.PG_DB,
+                    logging_setup.event(
+                        log, "storage.pg_connected",
+                        host=storage_config.PG_HOST,
+                        port=storage_config.PG_PORT,
+                        db=storage_config.PG_DB,
                     )
                 except Exception as e:
                     _unavailable = True
-                    log.error("alerts/postgres недоступен: %s", e)
+                    logging_setup.event(
+                        log, "storage.pg_unavailable",
+                        level=logging.ERROR,
+                        error=str(e),
+                        hint="модуль alerts работает без истории и кэша",
+                    )
                     return None
     return _pool
 
@@ -67,7 +78,10 @@ def ensure_schema() -> bool:
     if _initialized:
         return True
     if not config.pg_configured():
-        log.info("alerts/postgres: PG не настроен — история и engine-кэш выключены")
+        logging_setup.event(
+            log, "storage.pg_skipped",
+            hint="PG не настроен — история и кэш alerts выключены",
+        )
         return False
     try:
         with _conn() as con:
@@ -121,12 +135,47 @@ def ensure_schema() -> bool:
                     "CREATE INDEX IF NOT EXISTS alerts_configs_name "
                     "ON alerts_configs (name);"
                 )
+                # Папки — метаданные UI в Postgres (конфиги алертов остаются в n8n).
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS alerts_folders (
+                        id          bigserial   PRIMARY KEY,
+                        name        text        NOT NULL,
+                        sort_order  int         NOT NULL DEFAULT 0,
+                        created_at  timestamptz NOT NULL
+                    );
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS alerts_folder_members (
+                        alert_key  text PRIMARY KEY,
+                        folder_id  bigint NOT NULL
+                                   REFERENCES alerts_folders(id) ON DELETE CASCADE
+                    );
+                    """
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS alerts_folder_members_folder "
+                    "ON alerts_folder_members (folder_id);"
+                )
         _initialized = True
-        log.info("alerts/postgres: схема готова")
+        logging_setup.event(
+            log, "storage.schema_ready",
+            tables=[
+                "alerts_history", "alerts_meta", "alerts_configs",
+                "alerts_folders", "alerts_folder_members",
+            ],
+        )
         return True
     except Exception as e:
         _unavailable = True
-        log.error("alerts/postgres схема не создана: %s", e)
+        logging_setup.event(
+            log, "storage.pg_unavailable",
+            level=logging.ERROR,
+            error=str(e),
+            hint="модуль alerts работает без истории и кэша",
+        )
         return False
 
 
@@ -425,3 +474,262 @@ def set_index_patterns(patterns: list[str]) -> list[str]:
     except Exception as e:
         log.warning("alerts set_index_patterns: %s", e)
         return clean
+
+
+def _lookup_meta_key(kind: str, token: str) -> str:
+    return f"lookup:{kind}:{token}"
+
+
+def lookup_cache_token(payload: object) -> str:
+    """Стабильный ключ кэша для lookup-запроса."""
+    try:
+        return json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    except Exception:
+        return str(payload)
+
+
+def get_lookup_cache(kind: str, token: str, ttl_seconds: int) -> dict | None:
+    """Прочитать lookup-кэш (fields/indices), если TTL ещё не истёк."""
+    if ttl_seconds <= 0 or not ensure_schema():
+        return None
+    try:
+        with _conn() as con:
+            if con is None:
+                return None
+            with con.cursor() as cur:
+                cur.execute(
+                    "SELECT value, updated_at FROM alerts_meta WHERE key = %s",
+                    (_lookup_meta_key(kind, token),),
+                )
+                row = cur.fetchone()
+                if not row or not isinstance(row[0], dict) or not row[1]:
+                    return None
+                age = datetime.now(timezone.utc) - row[1]
+                if age.total_seconds() > ttl_seconds:
+                    return None
+                payload = row[0].get("payload")
+                return payload if isinstance(payload, dict) else None
+    except Exception as e:
+        log.warning("alerts get_lookup_cache(%s): %s", kind, e)
+        return None
+
+
+def set_lookup_cache(kind: str, token: str, payload: dict) -> dict:
+    """Записать lookup-кэш в alerts_meta."""
+    data = payload if isinstance(payload, dict) else {}
+    if not ensure_schema():
+        return data
+    try:
+        with _conn() as con:
+            if con is None:
+                return data
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO alerts_meta (key, value, updated_at)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (key) DO UPDATE SET
+                        value = EXCLUDED.value,
+                        updated_at = EXCLUDED.updated_at
+                    """,
+                    (
+                        _lookup_meta_key(kind, token),
+                        Json({"payload": data}),
+                        datetime.now(timezone.utc),
+                    ),
+                )
+        return data
+    except Exception as e:
+        log.warning("alerts set_lookup_cache(%s): %s", kind, e)
+        return data
+
+
+# --- Папки алертов (Postgres-only) -------------------------------------------
+
+def list_folders() -> list[dict]:
+    """Папки + membership: [{id, name, sortOrder, alertKeys: [...]}]."""
+    if not ensure_schema():
+        return []
+    try:
+        with _conn() as con:
+            if con is None:
+                return []
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, name, sort_order
+                    FROM alerts_folders
+                    ORDER BY sort_order ASC, name ASC, id ASC
+                    """
+                )
+                folders = cur.fetchall()
+                cur.execute(
+                    "SELECT alert_key, folder_id FROM alerts_folder_members"
+                )
+                members = cur.fetchall()
+        by_id: dict[int, list[str]] = {}
+        for alert_key, folder_id in members:
+            by_id.setdefault(int(folder_id), []).append(str(alert_key))
+        out = []
+        for fid, name, sort_order in folders:
+            keys = by_id.get(int(fid), [])
+            keys.sort()
+            out.append({
+                "id": int(fid),
+                "name": name or "",
+                "sortOrder": int(sort_order or 0),
+                "alertKeys": keys,
+            })
+        return out
+    except Exception as e:
+        log.warning("alerts list_folders: %s", e)
+        return []
+
+
+def create_folder(name: str, sort_order: int | None = None) -> dict | None:
+    title = (name or "").strip()
+    if not title or not ensure_schema():
+        return None
+    now = datetime.now(timezone.utc)
+    try:
+        with _conn() as con:
+            if con is None:
+                return None
+            with con.cursor() as cur:
+                order = sort_order
+                if order is None:
+                    cur.execute(
+                        "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM alerts_folders"
+                    )
+                    order = int(cur.fetchone()[0] or 0)
+                cur.execute(
+                    """
+                    INSERT INTO alerts_folders (name, sort_order, created_at)
+                    VALUES (%s, %s, %s)
+                    RETURNING id, name, sort_order
+                    """,
+                    (title, int(order), now),
+                )
+                row = cur.fetchone()
+        return {
+            "id": int(row[0]),
+            "name": row[1],
+            "sortOrder": int(row[2] or 0),
+            "alertKeys": [],
+        }
+    except Exception as e:
+        log.warning("alerts create_folder: %s", e)
+        return None
+
+
+def rename_folder(folder_id: int, name: str) -> dict | None:
+    title = (name or "").strip()
+    if not title or not ensure_schema():
+        return None
+    try:
+        with _conn() as con:
+            if con is None:
+                return None
+            with con.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE alerts_folders SET name = %s
+                    WHERE id = %s
+                    RETURNING id, name, sort_order
+                    """,
+                    (title, int(folder_id)),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                cur.execute(
+                    "SELECT alert_key FROM alerts_folder_members WHERE folder_id = %s",
+                    (int(folder_id),),
+                )
+                keys = sorted(str(r[0]) for r in cur.fetchall())
+        return {
+            "id": int(row[0]),
+            "name": row[1],
+            "sortOrder": int(row[2] or 0),
+            "alertKeys": keys,
+        }
+    except Exception as e:
+        log.warning("alerts rename_folder: %s", e)
+        return None
+
+
+def delete_folder(folder_id: int) -> bool:
+    """Удалить папку; алерты становятся без папки (CASCADE на members)."""
+    if not ensure_schema():
+        return False
+    try:
+        with _conn() as con:
+            if con is None:
+                return False
+            with con.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM alerts_folders WHERE id = %s",
+                    (int(folder_id),),
+                )
+                return (cur.rowcount or 0) > 0
+    except Exception as e:
+        log.warning("alerts delete_folder: %s", e)
+        return False
+
+
+def move_alert(alert_key: str, folder_id: int | None) -> dict:
+    """folder_id=None — убрать из папки. Возвращает {alertKey, folderId, ok}."""
+    key = (alert_key or "").strip()
+    if not key or not ensure_schema():
+        return {"alertKey": key, "folderId": None, "ok": False}
+    try:
+        with _conn() as con:
+            if con is None:
+                return {"alertKey": key, "folderId": None, "ok": False}
+            with con.cursor() as cur:
+                if folder_id is None:
+                    cur.execute(
+                        "DELETE FROM alerts_folder_members WHERE alert_key = %s",
+                        (key,),
+                    )
+                    return {"alertKey": key, "folderId": None, "ok": True}
+                fid = int(folder_id)
+                cur.execute("SELECT 1 FROM alerts_folders WHERE id = %s", (fid,))
+                if not cur.fetchone():
+                    return {"alertKey": key, "folderId": None, "ok": False}
+                cur.execute(
+                    """
+                    INSERT INTO alerts_folder_members (alert_key, folder_id)
+                    VALUES (%s, %s)
+                    ON CONFLICT (alert_key) DO UPDATE SET folder_id = EXCLUDED.folder_id
+                    """,
+                    (key, fid),
+                )
+                return {"alertKey": key, "folderId": fid, "ok": True}
+    except Exception as e:
+        log.warning("alerts move_alert: %s", e)
+        return {"alertKey": key, "folderId": None, "ok": False}
+
+
+def prune_folder_members(valid_alert_keys: list[str] | None = None) -> int:
+    """Удалить membership для ключей, которых больше нет в n8n/кэше."""
+    if valid_alert_keys is None or not ensure_schema():
+        return 0
+    valid = {str(k) for k in valid_alert_keys if k}
+    try:
+        with _conn() as con:
+            if con is None:
+                return 0
+            with con.cursor() as cur:
+                cur.execute("SELECT alert_key FROM alerts_folder_members")
+                existing = [str(r[0]) for r in cur.fetchall()]
+                stale = [k for k in existing if k not in valid]
+                for k in stale:
+                    cur.execute(
+                        "DELETE FROM alerts_folder_members WHERE alert_key = %s",
+                        (k,),
+                    )
+                return len(stale)
+    except Exception as e:
+        log.warning("alerts prune_folder_members: %s", e)
+        return 0

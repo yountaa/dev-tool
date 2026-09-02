@@ -1,32 +1,54 @@
-"""Настройки модуля alerts. Postgres — те же PG_* / PG_DSN, что у silences."""
+"""Настройки модуля alerts.
+
+Креды Postgres — из modules.silences.config (общее хранилище приложения).
+Свои переменные: N8N_URL и TTL кэша lookup (fields / indices).
+"""
 from __future__ import annotations
 
+import logging
 import os
 
 from dotenv import load_dotenv
 
+import logging_setup
+from modules.silences import config as storage_config
+
 load_dotenv()
 
-# Те же креды, что silences: либо PG_DSN, либо части.
-PG_DSN = os.getenv("PG_DSN", "").strip()
-PG_HOST = os.getenv("PG_HOST", "localhost").strip()
-PG_PORT = os.getenv("PG_PORT", "5432").strip()
-PG_DB = os.getenv("PG_DB", "devtool").strip()
-PG_USER = os.getenv("PG_USER", "").strip()
-PG_PASSWORD = os.getenv("PG_PASSWORD", "")
+log = logging.getLogger("alerts.config")
 
-HISTORY_RETENTION_DAYS = int(os.getenv("HISTORY_RETENTION_DAYS", "30"))
+# Origin n8n без хвостового /webhook — backend ходит туда за fields/indices
+# (фронт для CRUD/preview по-прежнему бьёт в /webhook через nginx).
+N8N_URL = os.getenv("N8N_URL", "").strip()
+
+# TTL lookup-кэша в Postgres. fields меняются редко, indices — чаще.
+FIELDS_CACHE_TTL_SECONDS = int(os.getenv("ALERTS_FIELDS_CACHE_TTL_SECONDS", "3600"))
+INDICES_CACHE_TTL_SECONDS = int(os.getenv("ALERTS_INDICES_CACHE_TTL_SECONDS", "900"))
+
+# Retention истории — тот же HISTORY_RETENTION_DAYS, что у silences.
+HISTORY_RETENTION_DAYS = storage_config.HISTORY_RETENTION_DAYS
 
 
 def pg_configured() -> bool:
     """Есть ли чем подключаться к Postgres."""
-    return bool(PG_DSN or PG_USER)
+    return bool(storage_config.PG_DSN or storage_config.PG_USER)
 
 
 def pg_dsn() -> str:
-    if PG_DSN:
-        return PG_DSN
-    return (
-        f"host={PG_HOST} port={PG_PORT} dbname={PG_DB} "
-        f"user={PG_USER} password={PG_PASSWORD}"
+    return storage_config.pg_dsn()
+
+
+def n8n_webhook_url() -> str:
+    base = N8N_URL.rstrip("/")
+    return f"{base}/webhook/alerts" if base else ""
+
+
+def log_config() -> None:
+    """Что прочитано из окружения — одной строкой на старте (зовётся из lifespan)."""
+    logging_setup.event(
+        log, "alerts.config",
+        n8n=bool(N8N_URL),
+        pg=pg_configured(),
+        fields_ttl_s=FIELDS_CACHE_TTL_SECONDS,
+        indices_ttl_s=INDICES_CACHE_TTL_SECONDS,
     )

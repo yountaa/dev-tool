@@ -10,6 +10,9 @@ import { TEMPLATES } from './templates.js'
 import AlertForm from './components/AlertForm.vue'
 import PreviewModal from './components/PreviewModal.vue'
 import AlertsHistoryList from './components/AlertsHistoryList.vue'
+import AlertsRunsList from './components/AlertsRunsList.vue'
+import AlertsTree from './components/AlertsTree.vue'
+import FolderDialog from './components/FolderDialog.vue'
 import { normalizeConfig } from './lib/normalize.js'
 import { validateConfig, slugId } from './lib/validate.js'
 import { sanitizeDelivery } from './lib/emailList.js'
@@ -27,6 +30,7 @@ defineProps({
 
 const TABS = [
   ['alerts', 'Alerts'],
+  ['runs', 'Runs'],
   ['history', 'History'],
 ]
 
@@ -43,17 +47,22 @@ const indexPatterns = ref([
   'kubernetes-*',
 ])
 const history = ref([])
+const folders = ref([])
+const folderDialog = ref(null) // { mode, folder?, busy? }
 const selected = ref(null)
 const selectedRowId = ref(null)
 const isNew = ref(false)
 const cfg = ref(null)
 const name = ref('')
+/** Снимок при открытии алерта — для History.before (cfg уже меняется по мере правок). */
+const historyBaseline = ref(null)
 const fieldHints = ref(buildFieldHints())
 /** Поля текущего индекса из ELK (_field_caps через n8n action: fields). */
 const indexFields = ref([])
 const fieldsStatus = ref({ state: 'idle', index: '', count: 0, error: '' })
 const busy = ref(false)
 const msg = ref(null)
+let msgTimer = null
 const previewOpen = ref(false)
 const previewResult = ref(null)
 const formRef = ref(null)
@@ -96,7 +105,8 @@ watchEffect(() => {
 
 function flash(text, kind = 'ok') {
   msg.value = { text, kind }
-  setTimeout(() => { msg.value = null }, 3500)
+  if (msgTimer) clearTimeout(msgTimer)
+  msgTimer = setTimeout(() => { msg.value = null }, 4000)
 }
 
 function rememberFields(names) {
@@ -222,6 +232,14 @@ async function loadHistory() {
   }
 }
 
+async function loadFolders() {
+  try {
+    folders.value = await api.listFolders()
+  } catch {
+    folders.value = []
+  }
+}
+
 async function refreshQuiet() {
   try {
     const data = await api.list()
@@ -236,7 +254,7 @@ onMounted(async () => {
   // 1) Мгновенно из Postgres  2) фоном обновить из n8n
   await hydrateFromCache()
   listLoading.value = !alerts.value.length
-  await Promise.all([load({ quiet: !!alerts.value.length }), loadHistory()])
+  await Promise.all([load({ quiet: !!alerts.value.length }), loadHistory(), loadFolders()])
   listLoading.value = false
   booted = true
   timer = setInterval(() => {
@@ -252,10 +270,12 @@ onActivated(() => {
 
 onUnmounted(() => {
   if (timer) clearInterval(timer)
+  if (msgTimer) clearTimeout(msgTimer)
 })
 
 watch(tab, (v) => {
   if (v === 'history') loadHistory()
+  if (v === 'runs') refreshQuiet()
 })
 
 function prepareCfg(raw) {
@@ -264,12 +284,20 @@ function prepareCfg(raw) {
   ))
 }
 
+function setBaseline(cfgObj, listName, alertKey) {
+  historyBaseline.value = historySnapshot(cfgObj, {
+    name: listName || '',
+    alertKey: alertKey || '',
+  })
+}
+
 function pick(a) {
   selected.value = a.alertKey
   selectedRowId.value = a.rowId || null
   isNew.value = false
   cfg.value = prepareCfg(a.config)
   name.value = a.name || a.alertKey
+  setBaseline(cfg.value, name.value, a.alertKey)
   configLoadId.value++
 }
 function create() {
@@ -278,6 +306,7 @@ function create() {
   isNew.value = true
   cfg.value = sanitizeDelivery(TEMPLATES.batch())
   name.value = ''
+  historyBaseline.value = null
   configLoadId.value++
   tab.value = 'alerts'
 }
@@ -287,6 +316,7 @@ function cancel() {
   isNew.value = false
   cfg.value = null
   name.value = ''
+  historyBaseline.value = null
 }
 
 function payload(fromCfg = cfg.value) {
@@ -315,12 +345,15 @@ async function save() {
   }
   busy.value = true
   try {
-    const beforeSnap = !isNew.value
-      ? historySnapshot(cfg.value, { name: name.value, alertKey: selected.value })
-      : null
+    // before — снимок при открытии, не текущий cfg (он уже отредактирован).
+    const beforeSnap = !isNew.value ? historyBaseline.value : null
     const savedCfg = formRef.value?.flushDrafts?.() || cfg.value
     cfg.value = savedCfg
     const body = payload(savedCfg)
+    const afterSnap = historySnapshot(body.config, {
+      name: body.name,
+      alertKey: selected.value || body.alertKey || '',
+    })
     if (isNew.value) {
       const created = await api.create(body)
       selected.value = created.alertKey || created.config?.id || selected.value
@@ -332,24 +365,27 @@ async function save() {
         name: body.name,
         alertKey: selected.value || body.alertKey || '',
         before: null,
-        after: historySnapshot(body.config, { name: body.name, alertKey: selected.value }),
+        after: afterSnap,
       })
     } else {
       await api.update(selected.value, body)
       flash('Сохранено')
-      await api.recordHistory({
-        action: 'изменил',
-        name: body.name,
-        alertKey: selected.value,
-        before: beforeSnap,
-        after: historySnapshot(body.config, { name: body.name, alertKey: selected.value }),
-      })
+      if (JSON.stringify(beforeSnap) !== JSON.stringify(afterSnap)) {
+        await api.recordHistory({
+          action: 'изменил',
+          name: body.name,
+          alertKey: selected.value,
+          before: beforeSnap,
+          after: afterSnap,
+        })
+      }
     }
     await load({ quiet: true })
     await loadHistory()
     if (selected.value) {
       const fresh = alerts.value.find((a) => a.alertKey === selected.value)
       if (fresh) pick(fresh)
+      else setBaseline(body.config, body.name, selected.value)
     }
   } catch (e) {
     flash(e.message, 'err')
@@ -374,6 +410,7 @@ async function remove() {
     })
     cancel()
     await load({ quiet: true })
+    await loadFolders()
     await loadHistory()
     flash('Удалён')
   } catch (e) {
@@ -406,6 +443,58 @@ function ago(iso) {
   if (min < 60) return `${min} мин назад`
   return `${Math.round(min / 60)} ч назад`
 }
+
+function openFolderDialog(mode, folder = null) {
+  folderDialog.value = { mode, folder, busy: false }
+}
+
+function closeFolderDialog() {
+  if (folderDialog.value?.busy) return
+  folderDialog.value = null
+}
+
+async function onFolderDialogConfirm({ mode, name }) {
+  if (!folderDialog.value) return
+  folderDialog.value = { ...folderDialog.value, busy: true }
+  try {
+    if (mode === 'create') {
+      await api.createFolder(name)
+      await loadFolders()
+      flash('Папка создана')
+    } else if (mode === 'rename') {
+      const f = folderDialog.value.folder
+      if (!f || name === f.name) {
+        folderDialog.value = null
+        return
+      }
+      await api.renameFolder(f.id, name)
+      await loadFolders()
+      flash('Папка переименована')
+    } else if (mode === 'delete') {
+      const f = folderDialog.value.folder
+      if (!f) return
+      await api.deleteFolder(f.id)
+      await loadFolders()
+      flash('Папка удалена')
+    }
+    // busy=true блокирует closeFolderDialog — закрываем напрямую после успеха.
+    folderDialog.value = null
+  } catch (e) {
+    folderDialog.value = { ...folderDialog.value, busy: false }
+    flash(e.message, 'err')
+  }
+}
+
+async function moveAlertTo({ alertKey, folderId }) {
+  if (!alertKey) return
+  try {
+    await api.moveAlert(alertKey, folderId)
+    await loadFolders()
+    flash(folderId == null ? 'Убран из папки' : 'Перемещён в папку')
+  } catch (e) {
+    flash(e.message, 'err')
+  }
+}
 </script>
 
 <template>
@@ -420,11 +509,21 @@ function ago(iso) {
       >
         {{ label }}
         <span v-if="id === 'alerts' && alerts.length" class="count">{{ alerts.length }}</span>
+        <span v-if="id === 'runs' && alerts.length" class="count">{{ alerts.length }}</span>
         <span v-if="id === 'history' && history.length" class="count">{{ history.length }}</span>
       </button>
     </div>
 
-    <div v-if="tab === 'history'" class="history-pane">
+    <div v-if="tab === 'runs'" class="runs-pane">
+      <AlertsRunsList
+        :alerts="alerts"
+        :engine="engine"
+        :engine-alive="engineAlive"
+        @reload="refreshQuiet"
+      />
+    </div>
+
+    <div v-else-if="tab === 'history'" class="history-pane">
       <AlertsHistoryList :items="history" @reload="loadHistory" />
     </div>
 
@@ -441,26 +540,17 @@ function ago(iso) {
           </div>
         </div>
 
-        <div class="list">
-          <p v-if="!alerts.length && !listLoading" class="none">Пока ни одного алерта</p>
-          <p v-if="listLoading && !alerts.length" class="none">Загрузка…</p>
-          <button
-            v-for="a in alerts" :key="a.alertKey"
-            class="item" :class="{ on: a.alertKey === selected }"
-            @click="pick(a)"
-          >
-            <span class="row1">
-              <span class="dot" :class="{ live: a.enabled, err: a.state?.lastError }"></span>
-              <span class="nm">{{ a.name }}</span>
-              <span class="badge">{{ a.type }}</span>
-            </span>
-            <span class="meta">
-              <span>{{ a.intervalMinutes }} мин</span>
-              <span>{{ ago(a.state?.lastRunAt) }}</span>
-            </span>
-            <span v-if="a.state?.lastError" class="err-line">{{ a.state.lastError }}</span>
-          </button>
-        </div>
+        <AlertsTree
+          :alerts="alerts"
+          :folders="folders"
+          :selected="selected"
+          :loading="listLoading"
+          @pick="pick"
+          @create-folder="openFolderDialog('create')"
+          @rename-folder="(f) => openFolderDialog('rename', f)"
+          @delete-folder="(f) => openFolderDialog('delete', f)"
+          @move-alert="moveAlertTo"
+        />
       </aside>
 
       <section class="main">
@@ -492,8 +582,6 @@ function ago(iso) {
             Чтобы сохранить: {{ errors.join('; ') }}
           </p>
 
-          <p v-if="msg" class="msg" :class="msg.kind === 'err' ? 'msg-err' : 'msg-ok'">{{ msg.text }}</p>
-
           <AlertForm
             ref="formRef"
             v-model:cfg="cfg"
@@ -513,6 +601,26 @@ function ago(iso) {
     </div>
 
     <PreviewModal :open="previewOpen" :result="previewResult" @close="previewOpen = false" />
+
+    <FolderDialog
+      :open="!!folderDialog"
+      :mode="folderDialog?.mode || 'create'"
+      :initial-name="folderDialog?.folder?.name || ''"
+      :folder-name="folderDialog?.folder?.name || ''"
+      :member-count="(folderDialog?.folder?.alertKeys || []).length"
+      :busy="!!folderDialog?.busy"
+      @close="closeFolderDialog"
+      @confirm="onFolderDialogConfirm"
+    />
+
+    <Teleport to="body">
+      <div
+        v-if="msg"
+        class="alerts-toast"
+        :class="msg.kind === 'err' ? 'err' : 'ok'"
+        role="status"
+      >{{ msg.text }}</div>
+    </Teleport>
   </div>
 </template>
 
@@ -535,9 +643,9 @@ function ago(iso) {
   background: var(--chip); color: var(--text-dim);
   font-size: 11px; padding: 1px 7px; border-radius: 20px; margin-left: 4px;
 }
-.history-pane { min-width: 0; }
+.history-pane, .runs-pane { min-width: 0; }
 .wrap { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 18px; align-items: start; }
-.rail { position: sticky; top: 16px; display: flex; flex-direction: column; gap: 10px; }
+.rail { position: sticky; top: 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .rail-head { display: flex; flex-direction: column; gap: 8px; }
 .create { width: 100%; }
 .engine { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-mute); }
@@ -545,26 +653,6 @@ function ago(iso) {
 .engine.bad .pip, .engine.none .pip { background: var(--danger); }
 .engine.loading .pip { background: var(--text-mute); animation: pulse 1s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: 0.35; } }
-.list { display: flex; flex-direction: column; gap: 4px; }
-.none { color: var(--text-mute); font-size: 12.5px; padding: 8px 4px; }
-.item {
-  display: flex; flex-direction: column; gap: 4px; text-align: left; width: 100%;
-  padding: 10px 12px; border-radius: 10px; border: 1px solid transparent;
-  background: var(--panel-2); color: var(--text); font-family: var(--sans);
-}
-.item:hover { border-color: var(--border); }
-.item.on { background: var(--accent-soft); border-color: var(--accent); }
-.row1 { display: flex; align-items: center; gap: 8px; }
-.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--track); flex: none; }
-.dot.live { background: #50c878; }
-.dot.err { background: var(--danger); }
-.nm { flex: 1; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.badge {
-  font-size: 10.5px; padding: 1px 6px; border-radius: 5px;
-  background: var(--chip); color: var(--text-mute);
-}
-.meta { display: flex; gap: 10px; font-size: 11.5px; color: var(--text-mute); }
-.err-line { font-size: 11.5px; color: var(--danger); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .main { min-width: 0; display: flex; flex-direction: column; gap: 12px; }
 .toolbar {
   position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 10px;
@@ -575,8 +663,31 @@ function ago(iso) {
 .key { font-family: var(--mono); font-size: 12px; color: var(--text-mute); }
 .spacer { flex: 1; }
 .danger { color: var(--danger); }
-.toolbar-err { margin: 0; }
+.toolbar-err { margin: 0; position: sticky; top: 56px; z-index: 4; }
 .placeholder { color: var(--text-dim); padding: 40px 8px; }
 .placeholder h2 { margin: 0 0 8px; }
+.alerts-toast {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 10000;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 12px 16px;
+  border-radius: 10px;
+  font-size: 13.5px;
+  line-height: 1.4;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+}
+.alerts-toast.ok {
+  background: var(--panel);
+  color: var(--accent-bright);
+  border: 1px solid var(--accent);
+}
+.alerts-toast.err {
+  background: var(--panel);
+  color: var(--danger);
+  border: 1px solid rgba(248, 81, 73, 0.55);
+}
 @media (max-width: 1000px) { .wrap { grid-template-columns: 1fr; } .rail { position: static; } }
 </style>

@@ -11,7 +11,9 @@ from fastapi.responses import JSONResponse
 import logging_setup
 from access import log_config as log_auth_config, request_log_fields, router as access_router
 from share import router as share_router
+from modules.alerts import config as alerts_config
 from modules.alerts import storage as alerts_storage
+from modules.alerts.client import AlertsN8nError
 from modules.alerts.routes import router as alerts_router
 from modules.silences import config as silences_config
 from modules.silences import save_hub
@@ -39,6 +41,7 @@ async def lifespan(app: FastAPI):
     log_auth_config()             # AUTH_/RBAC_
     silences_config.log_config()  # окружения Alertmanager, хранилище
     victoria_config.log_config()  # кластеры VM и их под-вкладки
+    alerts_config.log_config()    # N8N_URL, TTL lookup-кэша, есть ли PG
     save_hub.ensure_repo()
     alerts_storage.ensure_schema()  # alerts_history / alerts_meta (не ломает silences)
     scheduler.start()
@@ -106,6 +109,12 @@ async def am_error(request: Request, exc: AlertmanagerError):
 @app.exception_handler(VictoriaError)
 async def vm_error(request: Request, exc: VictoriaError):
     # Компонент VM недоступен/не настроен — понятный 502, а не стектрейс.
+    return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+
+@app.exception_handler(AlertsN8nError)
+async def alerts_n8n_error(request: Request, exc: AlertsN8nError):
+    # n8n/ELK lookup недоступен — понятный 502, а не стектрейс.
     return JSONResponse(status_code=502, content={"detail": str(exc)})
 
 

@@ -22,12 +22,19 @@ function buildBatchBody(cfg, win) {
 }
 
 // silence: последние логи по каждому узлу одним запросом (terms + top_hits)
+function silenceMessageField(r) {
+  const raw = String((r && r.messageField) != null ? r.messageField : 'message').trim() || 'message';
+  // Произвольный текст письма — не путь ES; в _source берём обычный message.
+  if (!/^[@A-Za-z_][@A-Za-z0-9_.*-]*$/.test(raw)) return 'message';
+  return raw;
+}
+
 function buildSilenceBody(cfg) {
   const s = cfg.source || {};
   const r = cfg.rule || {};
   const timeField = s.timeField || '@timestamp';
   const hostField = r.hostField;
-  const messageField = r.messageField || 'message';
+  const messageField = silenceMessageField(r);
   const scopeHours = Number(r.scopeHours) || 24;
   const lookbackHits = Number(r.lookbackHits) || 50;
 

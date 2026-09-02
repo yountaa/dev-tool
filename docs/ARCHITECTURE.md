@@ -195,10 +195,13 @@ Prometheus-формат.
 | `PUT /alerts/cache` | обновление кэша после успешного чтения из n8n |
 | `GET/PUT /alerts/engine` | heartbeat backend-workflow: `lastRunAt`, `lastError` |
 | `GET/POST /alerts/history` | журнал create/update/delete |
+| `POST /alerts/fields` | поля индекса: Postgres TTL-кэш → n8n/ELK |
+| `POST /alerts/indices` | паттерны индексов: Postgres TTL-кэш → n8n/ELK |
 
 Таблицы `alerts_history`, `alerts_meta`, `alerts_configs` описаны в
 [STORAGE.md](STORAGE.md). Без настроенного Postgres модуль работает, теряя
-только историю и кэш.
+только историю и кэш. Lookup `fields`/`indices` при недоступном Postgres
+каждый раз ходит в n8n (деградация без отказа).
 
 ## Общие механизмы
 

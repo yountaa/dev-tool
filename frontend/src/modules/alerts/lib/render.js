@@ -8,7 +8,7 @@ function escapeHtml(s) {
 }
 
 function applyTemplate(tpl, vars) {
-  return String(tpl == null ? '' : tpl).replace(/\{\{\s*(\w+)\s*\}\}/g, (_, name) => {
+  return String(tpl == null ? '' : tpl).replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, name) => {
     const v = vars[name];
     return v == null ? '' : String(v);
   });
@@ -270,6 +270,65 @@ function row(label, value) {
   return kvRow(label, value);
 }
 
+/** Плоские поля из _source для {{field}} в тексте silence. */
+function flattenSourceVars(src, prefix) {
+  const out = {};
+  if (!src || typeof src !== 'object') return out;
+  for (const [k, v] of Object.entries(src)) {
+    const key = prefix ? prefix + '.' + k : k;
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      Object.assign(out, flattenSourceVars(v, key));
+    } else if (v != null && v !== '') {
+      out[key] = String(v);
+    }
+  }
+  return out;
+}
+
+/** Имя поля узла (Worker из hostField) → алиас для {{Worker}} = значение узла. */
+function hostFieldAlias(hostField) {
+  const f = String(hostField || '').trim();
+  if (!f || !/^[@A-Za-z_][@A-Za-z0-9_.*-]*$/.test(f)) return '';
+  const parts = f.split('.');
+  return parts[parts.length - 1] || '';
+}
+
+function silenceMailVars(cfg, info, tz) {
+  const notify = cfg.notify || {};
+  const rule = cfg.rule || {};
+  const vars = {
+    host: info.host || '',
+    alertId: notify.alertId || '',
+    title: notify.title || '',
+    thresholdMinutes: String(rule.thresholdMinutes != null ? rule.thresholdMinutes : 3),
+    index: (cfg.source || {}).index || '',
+    ageMin: info.ageMin == null ? '' : String(info.ageMin),
+    lastLog: info.hasDoc ? fmtDateTime(info.lastTs, tz) : '',
+    reportDate: reportDate(tz),
+  };
+  const alias = hostFieldAlias(rule.hostField);
+  if (alias) vars[alias] = vars.host;
+  Object.assign(vars, flattenSourceVars(info.lastSource || {}));
+  return vars;
+}
+
+function silenceRowHidden(cfg, key) {
+  const hidden = (cfg.presentation || {}).silenceHiddenRows;
+  return Array.isArray(hidden) && hidden.indexOf(key) >= 0;
+}
+
+/** Сниппет в silence-письме: произвольный текст + {{переменные}}; иначе — из лога. */
+function silenceSnippet(cfg, info, tz) {
+  let raw;
+  if (info.fallbackText) raw = info.fallbackText;
+  else {
+    raw = (info.signalFound && info.signalTs !== info.lastTs) ? info.signalMsg : info.lastMsg;
+    raw = raw || '';
+  }
+  if (raw.indexOf('{{') < 0) return raw;
+  return applyTemplate(raw, silenceMailVars(cfg, info, tz));
+}
+
 function renderSilenceEmail(cfg, info) {
   const notify = cfg.notify || {};
   const rule = cfg.rule || {};
@@ -283,13 +342,29 @@ function renderSilenceEmail(cfg, info) {
       'алерт по этому узлу подавляется.</div>'
     : '';
 
-  const signalRow = (info.signalFound && info.signalTs && info.signalTs !== info.lastTs)
-    ? row('Значащий лог', escapeHtml(fmtDateTime(info.signalTs, tz)) +
-        ' <span style="color:#8a97a8;">(шумовые пропущены)</span>')
-    : '';
+  const metaRows = [];
+  if (!silenceRowHidden(cfg, 'host')) {
+    metaRows.push(row('Узел', '<b>' + escapeHtml(info.host) + '</b>'));
+  }
+  if (!silenceRowHidden(cfg, 'alertId')) {
+    metaRows.push(row('Алерт', escapeHtml(notify.alertId || '')));
+  }
+  if (!silenceRowHidden(cfg, 'threshold')) {
+    metaRows.push(row('Порог тишины', escapeHtml(String(rule.thresholdMinutes || 3)) + ' мин'));
+  }
+  if (!silenceRowHidden(cfg, 'lastLog')) {
+    metaRows.push(row('Последний лог', (info.hasDoc ? escapeHtml(fmtDateTime(info.lastTs, tz)) : '—') +
+      ' &nbsp;(' + escapeHtml(ageText) + ')'));
+  }
+  if (info.signalFound && info.signalTs && info.signalTs !== info.lastTs && !silenceRowHidden(cfg, 'signal')) {
+    metaRows.push(row('Значащий лог', escapeHtml(fmtDateTime(info.signalTs, tz)) +
+      ' <span style="color:#8a97a8;">(шумовые пропущены)</span>'));
+  }
+  if (!silenceRowHidden(cfg, 'index')) {
+    metaRows.push(row('Индекс', escapeHtml((cfg.source || {}).index || '')));
+  }
 
-  const snippetSource = (info.signalFound && info.signalTs !== info.lastTs) ? info.signalMsg : info.lastMsg;
-  const snippet = escapeHtml(String(snippetSource || '').slice(0, 400)) || '—';
+  const snippet = escapeHtml(String(silenceSnippet(cfg, info, tz)).slice(0, 400)) || '—';
 
   const html = '<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"></head>' +
     '<body style="margin:0;padding:0;background:#f6f7f9;font-family:Arial,Helvetica,sans-serif;">' +
@@ -299,15 +374,9 @@ function renderSilenceEmail(cfg, info) {
     '<tr><td style="padding:18px 24px;background:' + st.accent +
     ';color:#fff;font-size:17px;font-weight:bold;">' + escapeHtml(st.head + ' · ' + info.host) + '</td></tr>' +
     '<tr><td style="padding:18px 24px;font-size:15px;line-height:1.6;">' +
-    '<table cellpadding="0" cellspacing="0" style="font-size:15px;">' +
-    row('Узел', '<b>' + escapeHtml(info.host) + '</b>') +
-    row('Алерт', escapeHtml(notify.alertId || '')) +
-    row('Порог тишины', escapeHtml(String(rule.thresholdMinutes || 3)) + ' мин') +
-    row('Последний лог', (info.hasDoc ? escapeHtml(fmtDateTime(info.lastTs, tz)) : '—') +
-      ' &nbsp;(' + escapeHtml(ageText) + ')') +
-    signalRow +
-    row('Индекс', escapeHtml((cfg.source || {}).index || '')) +
-    '</table>' + standbyNote +
+    (metaRows.length ? '<table cellpadding="0" cellspacing="0" style="font-size:15px;">' + metaRows.join('') + '</table>' : '') +
+    standbyNote +
+    helpHtml(notify) +
     '<div style="margin-top:12px;color:#6b7280;font-size:13px;">Текст лога:</div>' +
     '<div style="margin-top:4px;font-family:ui-monospace,Consolas,monospace;font-size:12px;' +
     'background:#f3f4f6;border-radius:6px;padding:10px 12px;word-break:break-word;">' + snippet + '</div>' +
@@ -316,10 +385,9 @@ function renderSilenceEmail(cfg, info) {
     'border-top:1px solid #eee;">Автоматическое уведомление</td></tr>' +
     '</table></td></tr></table></body></html>';
 
-  const vars = {
-    alertId: notify.alertId, title: notify.title, host: info.host,
-    total: 1, unique: 1, reportDate: reportDate(tz),
-  };
+  const vars = silenceMailVars(cfg, info, tz);
+  vars.total = 1;
+  vars.unique = 1;
   const base = applyTemplate(notify.subjectTemplate || '{{title}}: {{host}}', vars);
 
   return { subject: st.tag + ' · ' + base, html };

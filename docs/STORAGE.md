@@ -84,7 +84,8 @@ STORAGE_BACKEND=postgres   → общая БД. Сколько угодно но
 `alert_key`, `before`, `after`. Индекс по `ts DESC`.
 
 `alerts_meta` — служебные значения модуля alerts: `key`, `value` (jsonb),
-`updated_at`. Здесь лежит heartbeat backend-workflow.
+`updated_at`. Здесь лежит heartbeat backend-workflow, список index patterns и
+TTL-кэш lookup (`lookup:fields:…`, `lookup:indices:…`).
 
 `alerts_configs` — зеркало конфигов алертов из n8n для мгновенной отрисовки UI:
 `alert_key`, `row_id`, `name`, `enabled`, `type`, `interval_minutes`, `config`,
@@ -263,5 +264,5 @@ psql "$PG_DSN" -c 'SELECT alert_key, name, enabled, updated_at FROM alerts_confi
 ```
 
 В логах приложения при старте видно, какой режим выбран и поднялась ли схема:
-события `alerts/postgres: схема готова`, ошибки подключения — уровнем `error`.
-Подробнее — [LOGGING.md](LOGGING.md).
+события `storage.schema_ready` / `storage.pg_unavailable` у модулей, у alerts —
+ещё `alerts.config`. Подробнее — [LOGGING.md](LOGGING.md).

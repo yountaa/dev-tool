@@ -126,6 +126,15 @@ logging_setup.event(
 работать со второй ноды: без этой строки мёртвая первая нода не видна вовсе —
 о ней узнают, когда упадут обе.
 
+### alerts
+
+| Событие | Уровень | Смысл |
+| --- | --- | --- |
+| `alerts.config` | INFO | старт: есть ли `N8N_URL`/`PG_*`, TTL кэша fields/indices |
+| `storage.pg_connected` / `storage.schema_ready` | INFO | подключение к Postgres и готовность таблиц `alerts_*` |
+| `storage.pg_unavailable` / `storage.pg_skipped` | ERROR/INFO | БД недоступна или не настроена — модуль без истории/кэша |
+| `alerts.n8n_failed` | WARNING | lookup fields/indices в n8n не прошёл |
+
 ## Чужие логгеры
 
 Логи uvicorn заворачиваются в общий поток. Приглушены до `WARNING`:

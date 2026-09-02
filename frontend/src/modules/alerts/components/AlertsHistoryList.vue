@@ -34,25 +34,41 @@ const LABELS = {
   'notify.alertId': 'alertId',
   'notify.title': 'title',
   'notify.subjectTemplate': 'subject',
+  'notify.helpUrl': 'helpUrl',
   'delivery.from': 'from',
   'delivery.to': 'to',
   'delivery.email.from': 'from',
   'delivery.email.to': 'to',
   'schedule.intervalMinutes': 'interval',
   'schedule.trigger': 'trigger',
+  'schedule.sendWindow.enabled': 'sendWindow',
+  'schedule.sendWindow.from': 'sendFrom',
+  'schedule.sendWindow.to': 'sendTo',
+  'schedule.sendWindow.days': 'sendDays',
+  'schedule.sendWindow.timezone': 'sendTz',
   'rule.minCount': 'minCount',
   'rule.mode': 'mode',
   'rule.groupBy': 'groupBy',
+  'rule.emptyPolicy': 'emptyPolicy',
+  'rule.thresholdMinutes': 'threshold',
+  'rule.repeatMinutes': 'repeat',
+  'rule.hostField': 'hostField',
+  'rule.messageField': 'messageField',
+  'rule.standbyMarker': 'standby',
   'presentation.layout': 'layout',
 }
 
 const ORDER = [
   'name', 'alertKey', 'enabled', 'type', 'id',
   'source.index', 'source.timeField', 'source.kql',
-  'notify.alertId', 'notify.title', 'notify.subjectTemplate',
+  'notify.alertId', 'notify.title', 'notify.subjectTemplate', 'notify.helpUrl',
   'delivery.to', 'delivery.from', 'delivery.email.to', 'delivery.email.from',
   'schedule.intervalMinutes', 'schedule.trigger',
-  'rule.minCount', 'rule.mode', 'rule.groupBy',
+  'schedule.sendWindow.enabled', 'schedule.sendWindow.from', 'schedule.sendWindow.to',
+  'schedule.sendWindow.days', 'schedule.sendWindow.timezone',
+  'rule.minCount', 'rule.mode', 'rule.groupBy', 'rule.emptyPolicy',
+  'rule.thresholdMinutes', 'rule.repeatMinutes',
+  'rule.hostField', 'rule.messageField', 'rule.standbyMarker',
   'presentation.layout',
 ]
 
@@ -80,7 +96,9 @@ function flatten(obj, prefix = '') {
 function display(k, v) {
   if (v === undefined || v === null || v === '') return ''
   if (typeof v === 'boolean') return v ? 'yes' : 'no'
-  if (k.endsWith('intervalMinutes') || k === 'intervalMinutes') return `${v} min`
+  if (k.endsWith('intervalMinutes') || k.endsWith('thresholdMinutes') || k.endsWith('repeatMinutes') || k === 'intervalMinutes') {
+    return `${v} min`
+  }
   if (Array.isArray(v)) return v.join(', ')
   if (typeof v === 'object') return JSON.stringify(v)
   return String(v)
@@ -90,8 +108,17 @@ function fields(h) {
   const before = flatten(h.before)
   const after = flatten(h.after)
   const keys = new Set([...Object.keys(before), ...Object.keys(after)])
-  const ordered = ORDER.filter((k) => keys.has(k))
+  let ordered = ORDER.filter((k) => keys.has(k))
   for (const k of keys) if (!ordered.includes(k)) ordered.push(k)
+  // Для edited с before+after — только изменившиеся поля.
+  if (h.before && h.after) {
+    const diffOnly = ordered.filter((k) => {
+      const lv = display(k, before[k])
+      const rv = display(k, after[k])
+      return lv !== rv
+    })
+    if (diffOnly.length) ordered = diffOnly
+  }
   return ordered
 }
 function leftVal(h, k) {
@@ -104,7 +131,7 @@ function changed(h, k) {
   if (!h.before || !h.after) return true
   return leftVal(h, k) !== rightVal(h, k)
 }
-function keyOf(h, i) { return (h.time || h.ts || '') + i }
+function keyOf(h, i) { return (h.time || h.ts || '') + ':' + (h.alertKey || '') + ':' + i }
 
 function subText(h) {
   if (h.before && h.after) {
@@ -169,10 +196,11 @@ function toggle(key) {
       </div>
 
       <div v-if="openKey === keyOf(h, i)" class="detail">
-        <div class="cap">{{ caption(h) }}</div>
+        <div class="cap">{{ caption(h) }}<span v-if="h.before && h.after" class="cap-hint"> — только изменения</span></div>
         <div class="cols">
           <div class="col">
             <div class="col-h">before</div>
+            <p v-if="!h.before" class="empty">—</p>
             <div
               v-for="k in fields(h)" :key="'b-' + k"
               class="kv"
@@ -181,12 +209,13 @@ function toggle(key) {
               <span class="kk" :title="k">{{ labelOf(k) }}</span>
               <span
                 class="vv"
-                :class="{ rm: leftVal(h, k) && (!h.after || changed(h, k)) }"
+                :class="{ rm: !!leftVal(h, k) && (!h.after || changed(h, k)) }"
               >{{ leftVal(h, k) || '—' }}</span>
             </div>
           </div>
           <div class="col">
             <div class="col-h">after</div>
+            <p v-if="!h.after" class="empty">—</p>
             <div
               v-for="k in fields(h)" :key="'a-' + k"
               class="kv"
@@ -195,7 +224,7 @@ function toggle(key) {
               <span class="kk" :title="k">{{ labelOf(k) }}</span>
               <span
                 class="vv"
-                :class="{ add: rightVal(h, k) && (!h.before || changed(h, k)) }"
+                :class="{ add: !!rightVal(h, k) && (!h.before || changed(h, k)) }"
               >{{ rightVal(h, k) || '—' }}</span>
             </div>
           </div>
@@ -236,20 +265,25 @@ function toggle(key) {
 .when { font-family: var(--mono); font-size: 11px; color: var(--text-mute); margin-left: auto; flex: none; }
 .detail { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-soft); }
 .cap { font-size: 12px; color: var(--text-dim); margin-bottom: 10px; }
+.cap-hint { color: var(--text-mute); }
 .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .col { background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 8px; padding: 10px 12px; overflow: hidden; }
 .col-h { font-size: 11px; color: var(--text-mute); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px; }
+.empty { margin: 0; color: var(--text-mute); font-size: 12px; }
 .kv {
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
+  grid-template-columns: 96px minmax(0, 1fr);
   gap: 10px;
   font-family: var(--mono);
   font-size: 12px;
-  padding: 3px 6px;
+  padding: 4px 6px;
   border-radius: 4px;
   align-items: start;
 }
-.kv.diff { background: rgba(127, 127, 127, 0.08); }
+.kv.diff {
+  background: rgba(234, 179, 8, 0.12);
+  outline: 1px solid rgba(234, 179, 8, 0.28);
+}
 .kk {
   color: var(--text-mute);
   overflow: hidden;
@@ -257,7 +291,7 @@ function toggle(key) {
   white-space: nowrap;
 }
 .vv { color: var(--text); word-break: break-word; min-width: 0; }
-.vv.rm { color: var(--danger); font-weight: 600; }
+.vv.rm { color: var(--danger); font-weight: 600; text-decoration: line-through; text-decoration-thickness: 1px; }
 .vv.add { color: var(--accent-bright); font-weight: 600; }
 @media (max-width: 800px) {
   .cols { grid-template-columns: 1fr; }

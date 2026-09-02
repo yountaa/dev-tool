@@ -145,6 +145,32 @@ const SILENCE_REPEAT_PRESETS = [
   { label: '1 дн', value: 1440 },
 ]
 
+const SILENCE_EMAIL_ROWS = [
+  { key: 'host', label: 'Узел' },
+  { key: 'alertId', label: 'Алерт' },
+  { key: 'threshold', label: 'Порог тишины' },
+  { key: 'lastLog', label: 'Последний лог' },
+  { key: 'signal', label: 'Значащий лог (если отличается)' },
+  { key: 'index', label: 'Индекс' },
+]
+
+function silenceRowShown(key) {
+  const hidden = props.cfg.presentation?.silenceHiddenRows || []
+  return !hidden.includes(key)
+}
+
+function toggleSilenceRow(key, shown) {
+  const hidden = new Set(props.cfg.presentation?.silenceHiddenRows || [])
+  if (shown) hidden.delete(key)
+  else hidden.add(key)
+  set('presentation.silenceHiddenRows', [...hidden])
+}
+
+const silenceMessageHint = computed(() => {
+  const alias = (props.cfg.rule?.hostField || 'host').split('.').pop() || 'host'
+  return `Имя поля ES (message) — текст из лога; или своя фраза с подстановками: ${ph('host')}, ${ph(alias)} (узел), ${ph('thresholdMinutes')}, ${ph('index')}, ${ph('alertId')}, поля из лога — ${ph('message')} и т.д.`
+})
+
 
 // Смена типа: общие разделы сохраняем, правило берём из заготовки нового типа.
 function changeType(type) {
@@ -380,13 +406,21 @@ defineExpose({ flushDrafts, getEffectiveCfg })
           <div class="grid-2">
             <label class="field">
               <span class="req">Считать отдельно по полю<InfoHint text="Обычно узел или хост. Значения подхватятся из данных сами." /></span>
-              <input :value="cfg.rule?.hostField" class="input" list="alerts-field-list" placeholder="host.name"
-                     @input="set('rule.hostField', $event.target.value)" />
+              <AutocompleteInput
+                :model-value="cfg.rule?.hostField || ''"
+                :options="fieldOptions"
+                placeholder="host.name"
+                @update:model-value="set('rule.hostField', $event); $emit('remember', [$event])"
+              />
             </label>
             <label class="field">
-              <span>Поле с текстом лога</span>
-              <input :value="cfg.rule?.messageField" class="input" list="alerts-field-list" placeholder="message"
-                     @input="set('rule.messageField', $event.target.value)" />
+              <span>Поле с текстом лога<InfoHint :text="silenceMessageHint" /></span>
+              <AutocompleteInput
+                :model-value="cfg.rule?.messageField || ''"
+                :options="fieldOptions"
+                placeholder="message или текст для письма"
+                @update:model-value="set('rule.messageField', $event); $emit('remember', [$event])"
+              />
             </label>
           </div>
           <div class="grid-2">
@@ -526,7 +560,22 @@ defineExpose({ flushDrafts, getEffectiveCfg })
             <option v-for="o in layoutOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
           </select>
         </label>
-        <template v-if="cfg.type !== 'silence'">
+        <template v-if="cfg.type === 'silence'">
+          <div class="field">
+            <span>Строки в письме<InfoHint text="Снимите галочку — строка не попадёт в карточку письма. Заголовок со статусом всегда остаётся." /></span>
+            <div class="silence-row-toggles">
+              <label v-for="r in SILENCE_EMAIL_ROWS" :key="r.key" class="switch-row silence-row-toggle">
+                <input
+                  type="checkbox"
+                  :checked="silenceRowShown(r.key)"
+                  @change="toggleSilenceRow(r.key, $event.target.checked)"
+                />
+                <span>{{ r.label }}</span>
+              </label>
+            </div>
+          </div>
+        </template>
+        <template v-else>
           <div class="columns-block">
             <div class="columns-label">
               <span>Колонки в отчёте</span>
@@ -561,6 +610,10 @@ code { font-family: var(--mono); font-size: 11px; }
 .warn { margin: 4px 0 0; color: var(--danger); font-size: 12px; }
 .presentation-body { gap: 18px; }
 .format-field { max-width: 560px; }
+.silence-row-toggles {
+  display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 4px;
+}
+.silence-row-toggle { font-size: 13px; }
 .reload-fields {
   padding: 0 4px; font-size: 13px; line-height: 1;
   color: var(--text-mute); margin-left: 6px; vertical-align: middle;

@@ -18,18 +18,31 @@ function tzParts(nowMs, tz) {
     }).formatToParts(new Date(nowMs));
     const get = (t) => (parts.find((p) => p.type === t) || {}).value;
     const wd = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[get('weekday')];
-    return { wd: wd, hm: get('hour') + ':' + get('minute') };
+    let hour = get('hour');
+    // Intl иногда отдаёт 24 в полночь — сравниваем с type=time как 00:xx.
+    if (hour === '24') hour = '00';
+    const minute = get('minute');
+    return { wd: wd, hm: String(hour).padStart(2, '0') + ':' + String(minute).padStart(2, '0') };
   } catch (_) {
     return null;
   }
 }
 
+function normHm(s) {
+  const m = String(s || '').match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return '00:00';
+  let h = Number(m[1]);
+  if (h === 24) h = 0;
+  return String(h).padStart(2, '0') + ':' + m[2];
+}
+
 function inDayWindow(p, days, from, to) {
   const list = (Array.isArray(days) && days.length ? days : [0, 1, 2, 3, 4, 5, 6]).map(Number);
   if (list.indexOf(p.wd) < 0) return false;
-  const f = String(from || '00:00');
-  const t = String(to || '23:59');
-  return f <= t ? (p.hm >= f && p.hm <= t) : (p.hm >= f || p.hm <= t);
+  const f = normHm(from || '00:00');
+  const t = normHm(to || '23:59');
+  const hm = normHm(p.hm);
+  return f <= t ? (hm >= f && hm <= t) : (hm >= f || hm <= t);
 }
 
 // Наступил ли момент запуска. lastRunAt — из состояния, now — мс.
