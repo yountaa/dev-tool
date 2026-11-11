@@ -12,7 +12,7 @@ import DurationInput from './DurationInput.vue'
 import AutocompleteInput from '../../silences/components/AutocompleteInput.vue'
 import IndexPatternSelect from './IndexPatternSelect.vue'
 import { TYPE_INFO, TEMPLATES } from '../templates.js'
-import { emailListToDraft, parseDraftEmails, GARBAGE } from '../lib/emailList.js'
+import { emailListToDraft, parseDraftEmails, groupListToDraft, parseDraftGroups, GARBAGE } from '../lib/emailList.js'
 
 const props = defineProps({
   cfg: { type: Object, required: true },
@@ -123,7 +123,7 @@ const groupByMissing = computed(() => {
 })
 
 const subjectHint = computed(() =>
-  `Подстановки: ${ph('title')}, ${ph('alertId')}, ${ph('total')}${props.cfg.type === 'silence' ? `, ${ph('host')}` : ''}.`,
+  `Подстановки: ${ph('title')}, ${ph('alertId')}, ${ph('total')}${['silence', 'incident'].includes(props.cfg.type) ? `, ${ph('host')}` : ''}.`,
 )
 
 const SILENCE_THRESHOLD_PRESETS = [
@@ -166,6 +166,75 @@ function toggleSilenceRow(key, shown) {
   set('presentation.silenceHiddenRows', [...hidden])
 }
 
+// Строки incident-карточки: время, server (если такой алиас есть) и поля.
+// Поля ключа показываются по умолчанию, остальные из «Какие поля брать» —
+// по галочке (presentation.incidentExtraRows); порядок — incidentRowOrder.
+const incidentRowKeys = computed(() => {
+  const keys = props.cfg.rule?.incidentKey || []
+  const base = ['time']
+  if (mapped.value.includes('server')) base.push('server')
+  for (const f of [...keys, ...mapped.value]) {
+    if (f && f !== 'server' && !base.includes(f)) base.push(f)
+  }
+  const order = props.cfg.presentation?.incidentRowOrder || []
+  const sorted = []
+  for (const f of [...order, ...base]) {
+    if (base.includes(f) && !sorted.includes(f)) sorted.push(f)
+  }
+  return sorted
+})
+
+const incidentEmailRows = computed(() => {
+  const keys = props.cfg.rule?.incidentKey || []
+  return incidentRowKeys.value.map((k) => ({
+    key: k,
+    label: k === 'time' ? 'Время' : k === 'server' ? 'Сервер' : k,
+    inKey: keys.includes(k),
+  }))
+})
+
+function incidentRowShown(key) {
+  const pres = props.cfg.presentation || {}
+  if ((pres.incidentHiddenRows || []).includes(key)) return false
+  if (key === 'time' || key === 'server') return true
+  const keys = props.cfg.rule?.incidentKey || []
+  return keys.includes(key) || (pres.incidentExtraRows || []).includes(key)
+}
+
+// Один emit на все коллекции: два set() подряд читают старый props.cfg
+// и затирают друг друга.
+function patchPresentation(fields) {
+  const next = JSON.parse(JSON.stringify(props.cfg))
+  if (!next.presentation || typeof next.presentation !== 'object') next.presentation = {}
+  Object.assign(next.presentation, fields)
+  emit('update:cfg', next)
+}
+
+function toggleIncidentRow(key, shown) {
+  const keys = props.cfg.rule?.incidentKey || []
+  const pres = props.cfg.presentation || {}
+  const hidden = new Set(pres.incidentHiddenRows || [])
+  const extra = new Set(pres.incidentExtraRows || [])
+  const isKeyRow = key === 'time' || key === 'server' || keys.includes(key)
+  if (shown) {
+    hidden.delete(key)
+    if (!isKeyRow) extra.add(key)
+  } else {
+    extra.delete(key)
+    if (isKeyRow) hidden.add(key)
+  }
+  patchPresentation({ incidentHiddenRows: [...hidden], incidentExtraRows: [...extra] })
+}
+
+function moveIncidentRow(key, delta) {
+  const list = [...incidentRowKeys.value]
+  const i = list.indexOf(key)
+  const j = i + delta
+  if (i < 0 || j < 0 || j >= list.length) return
+  list.splice(j, 0, list.splice(i, 1)[0])
+  patchPresentation({ incidentRowOrder: list })
+}
+
 const silenceMessageHint = computed(() => {
   const alias = (props.cfg.rule?.hostField || 'host').split('.').pop() || 'host'
   return `Имя поля ES (message) — текст из лога; или своя фраза с подстановками: ${ph('host')}, ${ph(alias)} (узел), ${ph('thresholdMinutes')}, ${ph('index')}, ${ph('alertId')}, поля из лога — ${ph('message')} и т.д.`
@@ -182,20 +251,28 @@ function changeType(type) {
   if (type === 'silence') {
     delete next.window
     next.presentation = { ...(next.presentation || {}), layout: 'card' }
-  } else if (!next.window) next.window = tpl.window
+  } else {
+    if (!next.window) next.window = tpl.window
+    if (type === 'incident') next.presentation = { ...(next.presentation || {}), layout: 'card' }
+  }
   if (!next.schedule) next.schedule = {}
   next.schedule.intervalMinutes = tpl.schedule.intervalMinutes
-  if (type !== 'silence' && !next.presentation?.layout) {
+  if (type !== 'silence' && type !== 'incident' && !next.presentation?.layout) {
     next.presentation = { ...(tpl.presentation || {}), ...(next.presentation || {}) }
   }
   emit('update:cfg', next)
 }
 
 const recipientsDraft = ref('')
+const tgGroupsDraft = ref('')
 const ignoreDraft = ref('')
 
 function syncRecipientsFromCfg() {
   recipientsDraft.value = emailListToDraft(props.cfg?.delivery?.email?.to)
+}
+
+function syncTgGroupsFromCfg() {
+  tgGroupsDraft.value = groupListToDraft(props.cfg?.delivery?.telegram?.groupList)
 }
 
 function syncIgnoreFromCfg() {
@@ -205,6 +282,7 @@ function syncIgnoreFromCfg() {
 
 watch(() => props.configLoadId, () => {
   syncRecipientsFromCfg()
+  syncTgGroupsFromCfg()
   syncIgnoreFromCfg()
 }, { immediate: true })
 
@@ -213,6 +291,11 @@ function onRecipientsInput(event) {
   if (recipientsDraft.value.includes(GARBAGE)) {
     recipientsDraft.value = parseDraftEmails(recipientsDraft.value).join('\n')
   }
+  emit('draft-change')
+}
+
+function onTgGroupsInput(event) {
+  tgGroupsDraft.value = event.target.value
   emit('draft-change')
 }
 
@@ -227,6 +310,8 @@ function applyDrafts(base) {
   if (!next.delivery) next.delivery = {}
   if (!next.delivery.email) next.delivery.email = {}
   next.delivery.email.to = parseDraftEmails(recipientsDraft.value)
+  if (!next.delivery.telegram) next.delivery.telegram = {}
+  next.delivery.telegram.groupList = parseDraftGroups(tgGroupsDraft.value)
   if (!next.rule) next.rule = {}
   next.rule.ignorePatterns = ignoreDraft.value
     .split(/\n/).map((s) => s.trim()).filter(Boolean)
@@ -269,6 +354,7 @@ defineExpose({ flushDrafts, getEffectiveCfg })
               <option value="batch">Сводка за период</option>
               <option value="silence">Пропажа логов</option>
               <option value="any">Каждое событие</option>
+              <option value="incident">Инцидент по ключу</option>
             </select>
           </label>
         </div>
@@ -469,7 +555,7 @@ defineExpose({ flushDrafts, getEffectiveCfg })
         </template>
 
         <!-- any -->
-        <template v-else>
+        <template v-else-if="cfg.type === 'any'">
           <div class="grid-2">
             <label class="field">
               <span>Как слать</span>
@@ -497,6 +583,44 @@ defineExpose({ flushDrafts, getEffectiveCfg })
                    @input="set('rule.panicThreshold', Number($event.target.value))" />
           </label>
         </template>
+
+        <!-- incident -->
+        <template v-else-if="cfg.type === 'incident'">
+          <label class="field">
+            <span class="req">Поле статуса<InfoHint text="Алиас из «Какие поля брать» со значениями вроде ERROR/INFO." /></span>
+            <select :value="cfg.rule?.statusField || ''" class="input sans"
+                    @change="set('rule.statusField', $event.target.value)">
+              <option value="" disabled>выберите поле</option>
+              <option v-for="m in mapped" :key="m" :value="m">{{ m }}</option>
+            </select>
+          </label>
+          <div class="grid-2">
+            <label class="field">
+              <span class="req">Значение «открыть»</span>
+              <input :value="cfg.rule?.openValue" class="input" placeholder="ERROR"
+                     @input="set('rule.openValue', $event.target.value)" />
+            </label>
+            <label class="field">
+              <span class="req">Значение «закрыть»</span>
+              <input :value="cfg.rule?.closeValue" class="input" placeholder="INFO"
+                     @input="set('rule.closeValue', $event.target.value)" />
+            </label>
+          </div>
+          <div class="field">
+            <span class="req">Инцидент — один и тот же, если совпадают<InfoHint text="Эти поля идут и в ключ дедупликации, и в текст письма. Если в источнике есть алиас server — он тоже попадёт в письмо, отдельно выбирать не нужно." /></span>
+            <ChipsPicker :model-value="cfg.rule?.incidentKey || []" :options="mapped"
+                         empty="сначала добавьте поля выше в «Какие поля брать»"
+                         @update:model-value="set('rule.incidentKey', $event)" />
+          </div>
+          <label class="field">
+            <span>Не закрывать автоматически, если пусто<InfoHint text="Инцидент с пустым значением в этом поле закрывается только вручную." /></span>
+            <select :value="cfg.rule?.noAutoCloseField || ''" class="input sans"
+                    @change="set('rule.noAutoCloseField', $event.target.value)">
+              <option value="">не применяется</option>
+              <option v-for="k in (cfg.rule?.incidentKey || [])" :key="k" :value="k">{{ k }}</option>
+            </select>
+          </label>
+        </template>
       </div>
     </section>
 
@@ -512,31 +636,89 @@ defineExpose({ flushDrafts, getEffectiveCfg })
     <section class="card">
       <div class="card-head"><h3 class="card-title">Кому отправлять</h3></div>
       <div class="body">
-        <div class="grid-2">
-          <label class="field">
-            <span>От кого</span>
-            <input :value="cfg.delivery?.email?.from" class="input"
-                   @input="set('delivery.email.from', $event.target.value)" />
+        <div class="channel-toggles">
+          <label class="switch-row">
+            <input
+              type="checkbox"
+              :checked="cfg.delivery?.email?.enabled !== false"
+              @change="set('delivery.email.enabled', $event.target.checked)"
+            />
+            <span>Email</span>
           </label>
-          <label class="field">
-            <span>Тема письма<InfoHint :text="subjectHint" /></span>
-            <input :value="cfg.notify?.subjectTemplate" class="input"
-                   @input="set('notify.subjectTemplate', $event.target.value)" />
+          <label class="switch-row">
+            <input
+              type="checkbox"
+              :checked="!!cfg.delivery?.telegram?.enabled"
+              @change="set('delivery.telegram.enabled', $event.target.checked)"
+            />
+            <span>Telegram</span>
           </label>
         </div>
+
+        <template v-if="cfg.delivery?.email?.enabled !== false">
+          <div class="grid-2">
+            <label class="field">
+              <span>От кого</span>
+              <input :value="cfg.delivery?.email?.from" class="input"
+                     @input="set('delivery.email.from', $event.target.value)" />
+            </label>
+            <label class="field">
+              <span>Тема письма<InfoHint :text="subjectHint" /></span>
+              <input :value="cfg.notify?.subjectTemplate" class="input"
+                     @input="set('notify.subjectTemplate', $event.target.value)" />
+            </label>
+          </div>
+          <label class="field">
+            <span class="req">Получатели email<InfoHint text="По одному адресу в строке (Enter), или через запятую/точку с запятой." /></span>
+            <textarea
+              :key="`recipients-${configLoadId}`"
+              :value="recipientsDraft"
+              class="input"
+              rows="3"
+              placeholder="ivan@hofftech.ru&#10;petrov@hofftech.ru"
+              @input="onRecipientsInput"
+            ></textarea>
+          </label>
+        </template>
+
+        <template v-if="cfg.delivery?.telegram?.enabled">
+          <label class="field">
+            <span class="req">Группы Telegram<InfoHint text="Имена групп alarmbot (groupList). По одной в строке, например TEST_TIM." /></span>
+            <textarea
+              :key="`tg-groups-${configLoadId}`"
+              :value="tgGroupsDraft"
+              class="input"
+              rows="2"
+              placeholder="TEST_TIM"
+              @input="onTgGroupsInput"
+            ></textarea>
+          </label>
+          <div class="grid-2">
+            <label class="field">
+              <span class="req">Authorization<InfoHint text="Токен сервиса alarmbot (поле Authorization в JSON)." /></span>
+              <input
+                :value="cfg.delivery?.telegram?.authorization || ''"
+                class="input"
+                type="password"
+                autocomplete="off"
+                placeholder="токен сервиса"
+                @input="set('delivery.telegram.authorization', $event.target.value)"
+              />
+            </label>
+            <label class="field">
+              <span>URL API<InfoHint text="По умолчанию alarmbot sendTextFromService. Меняйте только если endpoint другой." /></span>
+              <input
+                :value="cfg.delivery?.telegram?.url || ''"
+                class="input"
+                placeholder="http://alarmbot.hoff.ru/sendService/api/telegram/sendTextFromService"
+                @input="set('delivery.telegram.url', $event.target.value)"
+              />
+            </label>
+          </div>
+        </template>
+
         <label class="field">
-          <span class="req">Получатели<InfoHint text="По одному адресу в строке (Enter), или через запятую/точку с запятой." /></span>
-          <textarea
-            :key="`recipients-${configLoadId}`"
-            :value="recipientsDraft"
-            class="input"
-            rows="4"
-            placeholder="ivan@hofftech.ru&#10;petrov@hofftech.ru"
-            @input="onRecipientsInput"
-          ></textarea>
-        </label>
-        <label class="field">
-          <span>Ссылка на инструкцию<InfoHint text="Появится в письме отдельной строкой — куда идти чинить." /></span>
+          <span>Ссылка на инструкцию<InfoHint text="Появится в письме/тексте отдельной строкой — куда идти чинить." /></span>
           <input :value="cfg.notify?.helpUrl" class="input" placeholder="https://confluence…"
                  @input="set('notify.helpUrl', $event.target.value)" />
         </label>
@@ -550,11 +732,11 @@ defineExpose({ flushDrafts, getEffectiveCfg })
       </div>
       <div class="body presentation-body">
         <label class="field format-field">
-          <span>Формат<InfoHint v-if="cfg.type === 'silence'" text="Для тишины всегда карточка в стиле zabbix-server (цветной статус + сниппет лога)." /></span>
+          <span>Формат<InfoHint v-if="cfg.type === 'silence'" text="Для тишины всегда карточка в стиле zabbix-server (цветной статус + сниппет лога)." /><InfoHint v-else-if="cfg.type === 'incident'" text="Для инцидента всегда карточка с фиксированным набором полей." /></span>
           <select
-            :value="cfg.type === 'silence' ? 'card' : (cfg.presentation?.layout || 'table')"
+            :value="['silence', 'incident'].includes(cfg.type) ? 'card' : (cfg.presentation?.layout || 'table')"
             class="input sans"
-            :disabled="cfg.type === 'silence'"
+            :disabled="['silence', 'incident'].includes(cfg.type)"
             @change="set('presentation.layout', $event.target.value)"
           >
             <option v-for="o in layoutOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
@@ -574,6 +756,38 @@ defineExpose({ flushDrafts, getEffectiveCfg })
               </label>
             </div>
           </div>
+        </template>
+        <template v-else-if="cfg.type === 'incident'">
+          <div class="field">
+            <span>Строки в письме<InfoHint text="Галочка — показывать строку, стрелки — порядок. Поля ключа включены по умолчанию, остальные поля из «Какие поля брать» добавляются галочкой. Пустые значения пропускаются, заголовок со статусом остаётся всегда." /></span>
+            <div class="incident-rows">
+              <div v-for="(r, i) in incidentEmailRows" :key="r.key" class="incident-row">
+                <label class="switch-row incident-row-label">
+                  <input
+                    type="checkbox"
+                    :checked="incidentRowShown(r.key)"
+                    @change="toggleIncidentRow(r.key, $event.target.checked)"
+                  />
+                  <span>{{ r.label }}<em v-if="r.inKey" class="incident-row-tag">ключ</em></span>
+                </label>
+                <span class="ops">
+                  <button class="btn btn-icon" type="button" title="Выше"
+                          :disabled="i === 0" @click="moveIncidentRow(r.key, -1)">↑</button>
+                  <button class="btn btn-icon" type="button" title="Ниже"
+                          :disabled="i === incidentEmailRows.length - 1"
+                          @click="moveIncidentRow(r.key, 1)">↓</button>
+                </span>
+              </div>
+            </div>
+          </div>
+          <label class="switch-row">
+            <input
+              type="checkbox"
+              :checked="cfg.presentation?.incidentSubjectTag !== false"
+              @change="set('presentation.incidentSubjectTag', $event.target.checked)"
+            />
+            <span>Добавлять «ИНЦИДЕНТ ·» / «ЗАКРЫТО ·» в тему письма<InfoHint text="Снимите — тема будет ровно такой, как в шаблоне. В шаблоне доступны подстановки tag (ИНЦИДЕНТ/ЗАКРЫТО) и status, если нужен свой порядок." /></span>
+          </label>
         </template>
         <template v-else>
           <div class="columns-block">
@@ -605,6 +819,10 @@ defineExpose({ flushDrafts, getEffectiveCfg })
 .with-btn .input { flex: 1; }
 .switch-row { flex-direction: row; align-items: center; gap: 8px; }
 .switch-row input { width: auto; }
+.channel-toggles {
+  display: flex; flex-wrap: wrap; gap: 14px 22px;
+  padding-bottom: 4px;
+}
 select.sans, .sans { font-family: var(--sans); }
 code { font-family: var(--mono); font-size: 11px; }
 .warn { margin: 4px 0 0; color: var(--danger); font-size: 12px; }
@@ -614,6 +832,23 @@ code { font-family: var(--mono); font-size: 11px; }
   display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 4px;
 }
 .silence-row-toggle { font-size: 13px; }
+.incident-rows {
+  display: flex; flex-direction: column; gap: 6px; margin-top: 4px;
+  max-width: 520px;
+}
+.incident-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+}
+.incident-row-label { font-size: 13px; min-width: 0; }
+.incident-row-label > span { overflow-wrap: anywhere; }
+.incident-row-tag {
+  margin-left: 6px; padding: 0 5px; border-radius: 4px;
+  background: var(--bg-mute, rgba(127, 127, 127, .14));
+  color: var(--text-mute); font-size: 10.5px; font-style: normal;
+  text-transform: uppercase; letter-spacing: .3px;
+}
+.incident-row .ops { display: flex; gap: 2px; flex: none; }
+.incident-row .btn-icon[disabled] { opacity: .35; cursor: default; }
 .reload-fields {
   padding: 0 4px; font-size: 13px; line-height: 1;
   color: var(--text-mute); margin-left: 6px; vertical-align: middle;

@@ -43,6 +43,13 @@ class LookupBody(BaseModel):
     q: str = ""
 
 
+class TestTelegramBody(BaseModel):
+    text: str = ""
+    authorization: str = ""
+    groupList: list[str] = Field(default_factory=list)
+    url: str = ""
+
+
 class FolderCreateBody(BaseModel):
     name: str
 
@@ -131,6 +138,20 @@ async def post_indices(body: LookupBody):
         "patterns": data.get("patterns") or data.get("indices") or data.get("names") or [],
     }
     return storage.set_lookup_cache("indices", token, payload)
+
+
+@router.post("/test-telegram")
+async def post_test_telegram(body: TestTelegramBody):
+    """Тестовая отправка текста в Telegram (alarmbot), без прогона движка."""
+    try:
+        return await client.send_telegram_test(
+            text=body.text,
+            authorization=body.authorization,
+            group_list=body.groupList,
+            url=body.url or None,
+        )
+    except client.AlertsTelegramError as e:
+        return {"ok": False, "message": str(e)}
 
 
 @router.get("/history")

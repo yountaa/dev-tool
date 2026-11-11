@@ -9,6 +9,7 @@
 | **silences** | Silence Manager | Ставит silence в Alertmanager: разово по датам и повторяющимися окнами по расписанию. Хранит правила и историю изменений, шедулер дочиняет недостающие silence. |
 | **victoria** | Victoria Metrics | Работа с кластерами VictoriaMetrics: графики PromQL/MetricsQL с автодополнением, цели скрейпа, правила алертинга, кардинальность и заполненность дисков. |
 | **alerts** | Alert Constructor | Конструктор алертов поверх Elasticsearch-индексов. Конфигурации ведёт n8n, приложение хранит журнал изменений и статус выполнения. |
+| **zabbix** | Zabbix Audit | Аудит Zabbix из ELK человеческим языком: кто, когда, что сделал, какие поля поменялись. Имена объектов по ID — из Zabbix API. |
 
 Доступ к вкладкам разграничивается по группам Keycloak.
 
@@ -28,7 +29,7 @@
 ```
 
 Браузер обращается только к фронту: внутренний nginx отдаёт статику и проксирует
-на бэкенд пути `/silences/`, `/victoria/`, `/alerts/`, `/access/`, `/share`,
+на бэкенд пути `/silences/`, `/victoria/`, `/alerts/`, `/zabbix/`, `/access/`, `/share`,
 `/s/`, `/health`, а `/webhook/` — в n8n. Открывать бэкенд наружу не требуется.
 
 Архитектурный принцип: **1 модуль = 1 роутер на бэкенде = 1 вкладка во фронте**.
@@ -54,6 +55,25 @@ docker run -e BACKEND_URL=http://backend:8000 -e N8N_URL=http://n8n:5678 -p 80:8
 nginx фронта балансирует между ними (`least_conn`) и временно исключает упавшую
 ноду. Для нескольких нод бэкенда требуется `STORAGE_BACKEND=postgres`: шедулер
 координируется advisory-локом и тикает ровно на одной ноде.
+
+**Настройки Zabbix Audit из GitLab (только dev).** Job `deploy-dev` перед
+запуском пишет на сервер файл `.env.zabbix` (права 600) из CI/CD Variables:
+
+| GitLab Variable | → в `.env.zabbix` |
+| --- | --- |
+| `ZBX_AUDIT_ES_URL` | `ZBX_AUDIT_ES_URL` (ноды через запятую) |
+| `ZBX_AUDIT_ES_API_KEY` | `ZBX_AUDIT_ES_API_KEY` |
+| `ZBX_AUDIT_TLS_VERIFY` | `ZBX_AUDIT_TLS_VERIFY` (опц.) |
+| `ZBX_AUDIT_INDEX` | `zbxaudit_prod` |
+| `ZBX_API_URL` / `ZBX_API_TOKEN` | `zbxapi_prod` / `zbxapitoken_prod` (опц.) |
+| `ZBX_ACCESS` | `access_zabbix` (опц.) |
+| `ZBX_UI_URL` | `zbxui_prod` (опц.: веб Zabbix, если адрес отличается от API) |
+
+У сервиса `backend` в compose файл подключается вторым: `env_file: [.env,
+.env.zabbix]`. Незаданная переменная в файл не пишется, файл перезаписывается
+на каждом деплое. `deploy-prod` этого не делает — на проде пока руками в `.env`.
+На dev `ZBX_AUDIT_TLS_VERIFY=false` задан в самом job'е (CA ещё не смонтирован);
+переменная в GitLab Variables его перебивает.
 
 **Живость:** `GET /health` → `{"status": "ok"}`.
 
@@ -156,11 +176,25 @@ Targets и Rules у него не появится. Мультитенантны
 
 | Переменная | По умолчанию | Описание |
 | --- | --- | --- |
-| `N8N_URL` | `http://n8n:5678` | Origin n8n, куда nginx фронта проксирует `/webhook/`. Обязательна для образа фронта |
+| `N8N_URL` | `http://n8n:5678` | Origin n8n **без** `/webhook`. Нужна **и frontend** (прокси `/webhook`), **и backend** (lookup fields/indices с кэшем в Postgres) |
 | `N8N_ORIGIN` | `http://localhost:5678` | Тот же адрес для dev-сервера Vite |
+| `ALERTS_FIELDS_CACHE_TTL_SECONDS` | `3600` | TTL кэша полей индекса в Postgres (секунды) |
+| `ALERTS_INDICES_CACHE_TTL_SECONDS` | `900` | TTL кэша паттернов индексов в Postgres (секунды) |
 
-Метаданные модуля (журнал, статус выполнения, кэш конфигураций) хранятся в
-Postgres по `PG_*`. Без настроенного Postgres модуль работает без истории.
+Метаданные модуля (журнал, статус выполнения, кэш конфигураций и lookup) хранятся в
+Postgres по `PG_*`. Без настроенного Postgres модуль работает без истории и без
+кэша lookup (каждый запрос fields/indices идёт в n8n).
+
+### Модуль zabbix
+
+| Переменная | По умолчанию | Описание |
+| --- | --- | --- |
+| `zbxaudit_<env>` | — | Индекс аудита в ES (`zabbix-auditlog-jdbc-*`); каждая переменная = вкладка инстанса |
+| `zbxapi_<env>` / `zbxapitoken_<env>` | — | Zabbix API и read-only токен: имена объектов по ID. Без них — только ID |
+| `ZBX_AUDIT_ES_URL` | — | Адрес Elasticsearch (не Kibana); HA — через запятую |
+| `ZBX_AUDIT_ES_USER` / `ZBX_AUDIT_ES_PASSWORD` | — | Сервисная УЗ с read на индекс; либо `ZBX_AUDIT_ES_API_KEY` |
+| `ZBX_AUDIT_TLS_VERIFY` | `true` | `true` / `false` / путь к CA-бандлу (ES и Zabbix API) |
+| `ZBX_AUDIT_MAX_RECORDS` | `2000` | Потолок записей за один поиск |
 
 ## Диагностика
 

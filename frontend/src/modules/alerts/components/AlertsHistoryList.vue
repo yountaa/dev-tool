@@ -39,8 +39,14 @@ const LABELS = {
   'delivery.to': 'to',
   'delivery.email.from': 'from',
   'delivery.email.to': 'to',
+  'delivery.emailEnabled': 'email',
+  'delivery.telegramEnabled': 'telegram',
+  'delivery.telegramGroups': 'tgGroups',
   'schedule.intervalMinutes': 'interval',
   'schedule.trigger': 'trigger',
+  'schedule.cron': 'cron',
+  'schedule.times': 'times',
+  'schedule.timezone': 'schedTz',
   'schedule.sendWindow.enabled': 'sendWindow',
   'schedule.sendWindow.from': 'sendFrom',
   'schedule.sendWindow.to': 'sendTo',
@@ -56,6 +62,7 @@ const LABELS = {
   'rule.messageField': 'messageField',
   'rule.standbyMarker': 'standby',
   'presentation.layout': 'layout',
+  'presentation.silenceHiddenRows': 'hiddenRows',
 }
 
 const ORDER = [
@@ -63,13 +70,14 @@ const ORDER = [
   'source.index', 'source.timeField', 'source.kql',
   'notify.alertId', 'notify.title', 'notify.subjectTemplate', 'notify.helpUrl',
   'delivery.to', 'delivery.from', 'delivery.email.to', 'delivery.email.from',
-  'schedule.intervalMinutes', 'schedule.trigger',
+  'delivery.emailEnabled', 'delivery.telegramEnabled', 'delivery.telegramGroups',
+  'schedule.intervalMinutes', 'schedule.trigger', 'schedule.cron', 'schedule.times', 'schedule.timezone',
   'schedule.sendWindow.enabled', 'schedule.sendWindow.from', 'schedule.sendWindow.to',
   'schedule.sendWindow.days', 'schedule.sendWindow.timezone',
   'rule.minCount', 'rule.mode', 'rule.groupBy', 'rule.emptyPolicy',
   'rule.thresholdMinutes', 'rule.repeatMinutes',
   'rule.hostField', 'rule.messageField', 'rule.standbyMarker',
-  'presentation.layout',
+  'presentation.layout', 'presentation.silenceHiddenRows',
 ]
 
 function actionLabel(a) { return ACT[a] || a || 'changed' }

@@ -54,3 +54,57 @@ async def call_webhook(action: str, body: dict | None = None) -> dict:
         msg = data.get("message") or data.get("error") or "n8n lookup failed"
         raise AlertsN8nError(str(msg))
     return data if isinstance(data, dict) else {"ok": True}
+
+
+DEFAULT_TG_URL = (
+    "http://alarmbot.hoff.ru/sendService/api/telegram/sendTextFromService"
+)
+
+
+class AlertsTelegramError(Exception):
+    """Не удалось отправить тестовое сообщение в Telegram (alarmbot)."""
+
+
+async def send_telegram_test(
+    *,
+    text: str,
+    authorization: str,
+    group_list: list[str],
+    url: str | None = None,
+) -> dict:
+    """POST в alarmbot sendTextFromService — только для тестовой кнопки UI."""
+    endpoint = (url or "").strip() or DEFAULT_TG_URL
+    payload = {
+        "Authorization": str(authorization or "").strip(),
+        "groupList": [str(g).strip() for g in (group_list or []) if str(g).strip()],
+        "text": str(text or ""),
+    }
+    if not payload["Authorization"]:
+        raise AlertsTelegramError("authorization обязателен")
+    if not payload["groupList"]:
+        raise AlertsTelegramError("укажите хотя бы одну группу")
+    if not payload["text"].strip():
+        raise AlertsTelegramError("пустой текст")
+
+    try:
+        res = await _http().post(endpoint, json=payload, timeout=httpx.Timeout(30.0, connect=5.0))
+        body: dict | str | None
+        try:
+            body = res.json()
+        except Exception:
+            body = (res.text or "")[:500]
+        if res.status_code >= 400:
+            detail = body if isinstance(body, str) else (
+                body.get("message") or body.get("error") or body
+            )
+            raise AlertsTelegramError(f"HTTP {res.status_code}: {detail}")
+        return {"ok": True, "status": res.status_code, "response": body}
+    except AlertsTelegramError:
+        raise
+    except httpx.HTTPError as e:
+        logging_setup.event(
+            log, "alerts.telegram_failed",
+            level=logging.WARNING,
+            error=str(e),
+        )
+        raise AlertsTelegramError(str(e)) from e

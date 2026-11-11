@@ -23,6 +23,9 @@ from modules.silences.schedule import scheduler
 from modules.victoria import config as victoria_config
 from modules.victoria.client import VictoriaError
 from modules.victoria.routes import router as victoria_router
+from modules.zabbix import config as zabbix_config
+from modules.zabbix.client import ZabbixAuditError
+from modules.zabbix.routes import router as zabbix_router
 
 logging_setup.setup()  # NDJSON в stdout
 # module в логе = первый сегмент имени логгера. У этих двух он общий, не модульный:
@@ -42,6 +45,7 @@ async def lifespan(app: FastAPI):
     silences_config.log_config()  # окружения Alertmanager, хранилище
     victoria_config.log_config()  # кластеры VM и их под-вкладки
     alerts_config.log_config()    # N8N_URL, TTL lookup-кэша, есть ли PG
+    zabbix_config.log_config()    # инстансы Zabbix, ES, есть ли Zabbix API
     save_hub.ensure_repo()
     alerts_storage.ensure_schema()  # alerts_history / alerts_meta (не ломает silences)
     scheduler.start()
@@ -118,12 +122,19 @@ async def alerts_n8n_error(request: Request, exc: AlertsN8nError):
     return JSONResponse(status_code=502, content={"detail": str(exc)})
 
 
+@app.exception_handler(ZabbixAuditError)
+async def zabbix_error(request: Request, exc: ZabbixAuditError):
+    # ES или Zabbix API недоступен — понятный 502, а не стектрейс.
+    return JSONResponse(status_code=502, content={"detail": str(exc)})
+
+
 # --- Подключение модулей (1 модуль = 1 router = 1 вкладка) ---------------------
 app.include_router(access_router)     # RBAC уровня приложения: /access/me
 app.include_router(share_router)      # короткие ссылки на вид: POST /share, GET /s/<id>
 app.include_router(silences_router)
 app.include_router(victoria_router)
 app.include_router(alerts_router)
+app.include_router(zabbix_router)
 
 
 @app.get("/health")

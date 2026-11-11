@@ -73,6 +73,7 @@ function setTrigger(t) {
   next.schedule = next.schedule || {}
   next.schedule.trigger = t
   if (t === 'dailyTimes' && !Array.isArray(next.schedule.times)) next.schedule.times = ['09:00']
+  if (t === 'cron' && !next.schedule.cron) next.schedule.cron = '0 1 9-19 * * *'
   if (!next.schedule.timezone) next.schedule.timezone = next.notify?.timezone || 'Europe/Moscow'
   emit('update:cfg', next)
 }
@@ -96,15 +97,21 @@ function toggleSwDay(d) {
 const isSilence = computed(() => props.cfg.type === 'silence')
 
 const summary = computed(() => {
-  const run = trigger.value === 'dailyTimes'
-    ? (times.value.length ? `в ${times.value.join(', ')}` : 'в заданное время (время не указано)')
-    : `каждые ${interval.value} мин`
+  let run
+  if (trigger.value === 'dailyTimes') {
+    run = times.value.length ? `в ${times.value.join(', ')}` : 'в заданное время (время не указано)'
+  } else if (trigger.value === 'cron') {
+    run = `по cron «${sched.value.cron || '…'}»`
+  } else {
+    run = `каждые ${interval.value} мин`
+  }
   if (isSilence.value) return `Движок проверит логи ${run} и напишет, если узел молчит дольше порога.`
-  if (props.cfg.type === 'any') return `Движок ${run} заберёт новые события и пришлёт письмо на каждое.`
+  if (props.cfg.type === 'any') return `Движок ${run} заберёт новые события и пришлёт уведомление на каждое.`
   const depthLabel = formatDurationMinutes(lookback.value)
   const depth = winMode.value === 'fixed'
     ? `за последние ${depthLabel}`
     : `с прошлого прогона (первый раз — за ${depthLabel})`
+  if (props.cfg.type === 'incident') return `Движок ${run} проверит новые события ${depth} и откроет/закроет инцидент по совпадению ключевых полей.`
   return `Движок ${run} соберёт события ${depth} и пришлёт сводку.`
 })
 </script>
@@ -119,6 +126,7 @@ const summary = computed(() => {
         <div class="seg">
           <button type="button" class="seg-b" :class="{ on: trigger === 'interval' }" @click="setTrigger('interval')">Периодически</button>
           <button type="button" class="seg-b" :class="{ on: trigger === 'dailyTimes' }" @click="setTrigger('dailyTimes')">В заданное время</button>
+          <button type="button" class="seg-b" :class="{ on: trigger === 'cron' }" @click="setTrigger('cron')">Cron</button>
         </div>
 
         <template v-if="trigger === 'interval'">
@@ -141,6 +149,21 @@ const summary = computed(() => {
             </div>
           </div>
           <button type="button" class="btn btn-ghost btn-sm" @click="addTime">+ Время</button>
+          <label class="row"><span>Часовой пояс</span>
+            <input class="input tz" :value="sched.timezone || 'Europe/Moscow'"
+                   @input="set('schedule.timezone', $event.target.value)" /></label>
+        </template>
+
+        <template v-else-if="trigger === 'cron'">
+          <label class="row">
+            <span>Cron-выражение<InfoHint text="Как в n8n: 5 или 6 полей (секунда минута час день месяц день_недели)." /></span>
+            <input
+              class="input mono cron"
+              :value="sched.cron || ''"
+              placeholder="0 1 9-19 * * *"
+              @input="set('schedule.cron', $event.target.value)"
+            />
+          </label>
           <label class="row"><span>Часовой пояс</span>
             <input class="input tz" :value="sched.timezone || 'Europe/Moscow'"
                    @input="set('schedule.timezone', $event.target.value)" /></label>
@@ -183,7 +206,7 @@ const summary = computed(() => {
     </div>
 
     <div class="sub-block">
-      <div class="h">Когда можно слать письма<InfoHint text="Даже если правило сработало, письмо уйдёт только в разрешённые часы. Логи при этом всё равно анализируются." /></div>
+      <div class="h">Когда можно слать уведомления<InfoHint text="Даже если правило сработало, письмо/Telegram уйдут только в разрешённые часы. Логи при этом всё равно анализируются." /></div>
       <div class="sub-body">
         <label class="row switch"><input type="checkbox" :checked="!!sw.enabled" @change="ensureSw({ enabled: $event.target.checked })" />
           <span>Ограничить часы отправки</span></label>
@@ -243,6 +266,7 @@ const summary = computed(() => {
 .row.switch input { width: auto; }
 .narrow { width: 120px; }
 .tz { max-width: 220px; }
+.cron { font-family: var(--mono); max-width: 420px; }
 .row3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
 .times { display: flex; flex-direction: column; gap: 6px; }
 .time-row { display: flex; gap: 6px; align-items: center; }

@@ -75,7 +75,8 @@ def log_config() -> None:
 ```
 
 Префикс выбирается так, чтобы не пересекаться с существующими: `alert_`,
-`rules_`, `vm_`, `vmagent_`, `vmalert_`, `access_`, `disks_`.
+`rules_`, `vm_`, `vmagent_`, `vmalert_`, `access_`, `zbxaudit_`, `zbxapi_`,
+`zbxapitoken_`, `disks_`.
 
 ### routes.py
 

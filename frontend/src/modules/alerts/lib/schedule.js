@@ -6,9 +6,12 @@
 // schedule.trigger:
 //   'interval'   — раз в intervalMinutes (по умолчанию)
 //   'dailyTimes' — в заданные моменты суток, times: ["09:00","18:00"]
+//   'cron'       — выражение cron (5 или 6 полей, как в n8n): "0 1 9-19 * * *"
 //   'window'     — только в окно часов from..to по дням days, внутри — по интервалу
 //
 // sendWindow (необязательно, поверх любого триггера) — «письма только в эти часы».
+
+import { cronMatches } from './cron.js';
 
 function tzParts(nowMs, tz) {
   try {
@@ -61,6 +64,12 @@ function isScheduledNow(cfg, lastRunAtIso, now) {
     // ещё не запускались (защита от двойного тика внутри минуты).
     if (times.indexOf(p.hm) < 0) return false;
     return sinceLast >= 60000; // не чаще раза в минуту на один и тот же момент
+  }
+
+  if (trigger === 'cron') {
+    const tz = s.timezone || (cfg.notify && cfg.notify.timezone) || 'Europe/Moscow';
+    if (!cronMatches(s.cron || '', now, tz)) return false;
+    return sinceLast >= 60000;
   }
 
   if (trigger === 'window') {

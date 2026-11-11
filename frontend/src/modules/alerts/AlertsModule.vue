@@ -65,6 +65,7 @@ const msg = ref(null)
 let msgTimer = null
 const previewOpen = ref(false)
 const previewResult = ref(null)
+const previewTestBusy = ref(false)
 const formRef = ref(null)
 const draftRev = ref(0)
 const configLoadId = ref(0)
@@ -436,6 +437,25 @@ async function preview() {
   }
 }
 
+async function testTelegramFromPreview({ text }) {
+  const conf = sanitizeDelivery(normalizeConfig(JSON.parse(JSON.stringify(cfg.value || {}))))
+  const tg = conf.delivery?.telegram || {}
+  previewTestBusy.value = true
+  try {
+    await api.testTelegram({
+      text,
+      authorization: tg.authorization,
+      groupList: tg.groupList,
+      url: tg.url,
+    })
+    flash('Тест отправлен в Telegram')
+  } catch (e) {
+    flash(e.message || 'Ошибка отправки в Telegram', 'err')
+  } finally {
+    previewTestBusy.value = false
+  }
+}
+
 function ago(iso) {
   if (!iso) return 'ещё не запускался'
   const min = Math.round((Date.now() - new Date(iso).getTime()) / 60000)
@@ -600,7 +620,14 @@ async function moveAlertTo({ alertKey, folderId }) {
       </section>
     </div>
 
-    <PreviewModal :open="previewOpen" :result="previewResult" @close="previewOpen = false" />
+    <PreviewModal
+      :open="previewOpen"
+      :result="previewResult"
+      :cfg="cfg"
+      :test-busy="previewTestBusy"
+      @close="previewOpen = false"
+      @test-telegram="testTelegramFromPreview"
+    />
 
     <FolderDialog
       :open="!!folderDialog"

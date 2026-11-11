@@ -393,4 +393,190 @@ function renderSilenceEmail(cfg, info) {
   return { subject: st.tag + ' · ' + base, html };
 }
 
-export { renderEmail, renderSilenceEmail, applyTemplate, escapeHtml, fmtDateTime };
+/** Плоский текст для Telegram (batch/any): заголовок + строки колонок. */
+function renderTelegramText(cfg, data) {
+  const notify = cfg.notify || {};
+  const columns = ((cfg.rule || {}).columns) || [];
+  const title = notify.title || notify.alertId || 'Алерт';
+  const lines = [];
+  lines.push(String(title));
+
+  for (const g of (data.groups || [])) {
+    const parts = [];
+    for (const c of columns) {
+      if (c.key === 'count') {
+        const n = Number(g.count);
+        if (n > 1) parts.push('(x' + n + ')');
+        continue;
+      }
+      const v = g[c.key];
+      if (v == null || v === '') continue;
+      parts.push(String(v));
+    }
+    if (parts.length) lines.push(' ' + parts.join(' , '));
+  }
+
+  if (notify.helpUrl) {
+    lines.push('');
+    lines.push((notify.helpLabel || 'инструкция') + ': ' + notify.helpUrl);
+  }
+
+  const text = lines.join('\n');
+  // Telegram limit 4096 — режем с запасом, движок может слать частями.
+  return text.length > 3500 ? text.slice(0, 3490) + '\n…' : text;
+}
+
+/** Текст Telegram для silence-карточки. */
+function renderSilenceTelegramText(cfg, info) {
+  const notify = cfg.notify || {};
+  const rule = cfg.rule || {};
+  const tz = notify.timezone || 'Europe/Moscow';
+  const st = SILENCE_STYLE[info.kind] || SILENCE_STYLE.ok;
+  const lines = [
+    st.head + ' · ' + (info.host || ''),
+    'Алерт: ' + (notify.alertId || ''),
+    'Порог: ' + String(rule.thresholdMinutes || 3) + ' мин',
+  ];
+  if (info.hasDoc) lines.push('Последний лог: ' + fmtDateTime(info.lastTs, tz));
+  const snip = silenceSnippet(cfg, info, tz);
+  if (snip) {
+    lines.push('');
+    lines.push(String(snip).slice(0, 500));
+  }
+  if (notify.helpUrl) {
+    lines.push('');
+    lines.push((notify.helpLabel || 'инструкция') + ': ' + notify.helpUrl);
+  }
+  return lines.join('\n');
+}
+
+/** Payload для alarmbot sendTextFromService. */
+function buildTelegramPayload(cfg, text) {
+  const tg = ((cfg.delivery || {}).telegram) || {};
+  return {
+    Authorization: String(tg.authorization || ''),
+    groupList: Array.isArray(tg.groupList) ? tg.groupList.slice() : [],
+    text: String(text || ''),
+  };
+}
+
+/**
+ * Строки incident-карточки: время, затем — по одной строке на каждое
+ * выбранное в правиле ключевое поле (под своим алиасом), пустые пропускаются.
+ * «Server» — тоже необязательный: алиас server, если он есть в источнике,
+ * попадает в карточку сам, отдельного требования на него нет.
+ * Никаких зашитых имён вроде groupName/processorName — ровно то, что выбрал
+ * пользователь в «Инцидент — один и тот же, если совпадают».
+ */
+function incidentRowHidden(cfg, key) {
+  const hidden = ((cfg && cfg.presentation) || {}).incidentHiddenRows;
+  return Array.isArray(hidden) && hidden.indexOf(key) >= 0;
+}
+
+/**
+ * Порядок строк карточки. Базовый набор — время, server, поля ключа и
+ * presentation.incidentExtraRows; presentation.incidentRowOrder задаёт
+ * порядок (что не перечислено — идёт следом), incidentHiddenRows убирает.
+ */
+function incidentRowList(cfg, keyFields) {
+  const pres = (cfg && cfg.presentation) || {};
+  const extra = Array.isArray(pres.incidentExtraRows) ? pres.incidentExtraRows : [];
+  const order = Array.isArray(pres.incidentRowOrder) ? pres.incidentRowOrder : [];
+  const base = ['time', 'server'].concat(keyFields || [], extra);
+  const out = [];
+  for (const f of order.concat(base)) {
+    // В order могут остаться поля, убранные из ключа, — их пропускаем.
+    if (!f || base.indexOf(f) < 0) continue;
+    if (incidentRowHidden(cfg, f) || out.indexOf(f) >= 0) continue;
+    out.push(f);
+  }
+  return out;
+}
+
+function incidentLines(head, row, keyFields, incident, cfg) {
+  const val = (k) => (row[k] != null && row[k] !== '' ? row[k] : (incident && incident.fields && incident.fields[k]));
+  const lines = [head];
+  for (const f of incidentRowList(cfg, keyFields)) {
+    if (f === 'time') {
+      lines.push('Time: ' + (row._ts || ''));
+      continue;
+    }
+    const v = val(f);
+    if (v == null || v === '') continue;
+    lines.push((f === 'server' ? 'Server' : f) + ': ' + v);
+  }
+  return lines;
+}
+
+/** Текст Telegram для открытия инцидента (incident). Формат зафиксирован по ТЗ. */
+function renderIncidentOpenTelegramText(cfg, ev) {
+  const row = ev.row || {};
+  const rule = cfg.rule || {};
+  const status = row[rule.statusField] || rule.openValue || 'ERROR';
+  return incidentLines('🚨 ' + status, row, rule.incidentKey, ev.incident, cfg).join('\n');
+}
+
+/** Текст Telegram для авто-закрытия инцидента (incident). Аналог открытия, тег RESOLVED. */
+function renderIncidentCloseTelegramText(cfg, ev) {
+  const row = ev.row || {};
+  const rule = cfg.rule || {};
+  const status = row[rule.statusField] || rule.closeValue || 'INFO';
+  return incidentLines('✅ RESOLVED (' + status + ')', row, rule.incidentKey, ev.incident, cfg).join('\n');
+}
+
+/** Email/card-эквивалент incident: та же карточка, что и silence, другие поля. */
+function renderIncidentEmail(cfg, ev) {
+  const notify = cfg.notify || {};
+  const rule = cfg.rule || {};
+  const tz = notify.timezone || 'Europe/Moscow';
+  const row = ev.row || {};
+  const incident = ev.incident;
+  const val = (k) => (row[k] != null && row[k] !== '' ? row[k] : (incident && incident.fields && incident.fields[k]));
+  const isOpen = ev.kind === 'open';
+  const accent = isOpen ? '#b23b3b' : '#2f7d5b';
+  const tag = isOpen ? 'ИНЦИДЕНТ' : 'ЗАКРЫТО';
+  const status = row[rule.statusField] || (isOpen ? rule.openValue : rule.closeValue) || '';
+  const head = (isOpen ? '🚨 ' : '✅ ') + status;
+
+  const rows = [];
+  for (const f of incidentRowList(cfg, rule.incidentKey)) {
+    if (f === 'time') {
+      rows.push(kvRow('Время', escapeHtml(fmtDateTime(row._ts, tz))));
+      continue;
+    }
+    const v = val(f);
+    if (v == null || v === '') continue;
+    rows.push(kvRow(f === 'server' ? 'Сервер' : f, escapeHtml(String(v))));
+  }
+
+  const html = '<!DOCTYPE html><html lang="ru"><head><meta charset="UTF-8"></head>' +
+    '<body style="margin:0;padding:0;background:#f6f7f9;font-family:Arial,Helvetica,sans-serif;">' +
+    '<table width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 12px;">' +
+    '<table width="720" cellpadding="0" cellspacing="0" bgcolor="#ffffff" ' +
+    'style="border-radius:8px;overflow:hidden;border:1px solid #e6e8eb;">' +
+    '<tr><td style="padding:18px 24px;background:' + accent +
+    ';color:#fff;font-size:17px;font-weight:bold;">' + escapeHtml(head) + '</td></tr>' +
+    '<tr><td style="padding:18px 24px;font-size:15px;line-height:1.6;">' +
+    '<table cellpadding="0" cellspacing="0" style="font-size:15px;">' + rows.join('') + '</table>' +
+    helpHtml(notify) +
+    '</td></tr>' +
+    '<tr><td align="center" style="padding:12px;background:#fafafa;color:#888;font-size:12px;' +
+    'border-top:1px solid #eee;">Автоматическое уведомление</td></tr>' +
+    '</table></td></tr></table></body></html>';
+
+  // Префикс «ИНЦИДЕНТ ·» / «ЗАКРЫТО ·» отключается галочкой в форме.
+  // В шаблоне темы доступны {{tag}} и {{status}}, если нужен свой порядок.
+  const vars = {
+    host: val('server') || '', alertId: notify.alertId || '',
+    title: notify.title || '', tag: tag, status: status,
+  };
+  const base = applyTemplate(notify.subjectTemplate || '{{title}} · {{host}}', vars);
+  const withTag = ((cfg.presentation || {}).incidentSubjectTag) !== false;
+  return { subject: withTag ? tag + ' · ' + base : base, html: html };
+}
+
+export {
+  renderEmail, renderSilenceEmail, renderTelegramText, renderSilenceTelegramText,
+  renderIncidentEmail, renderIncidentOpenTelegramText, renderIncidentCloseTelegramText,
+  buildTelegramPayload, applyTemplate, escapeHtml, fmtDateTime,
+};

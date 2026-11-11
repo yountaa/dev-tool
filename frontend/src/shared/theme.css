@@ -57,7 +57,8 @@
    иначе тёмный оверрайд «протёк» бы в светлую тему (одинаковая специфичность).
    silences — палитра по умолчанию (фиолетовая), отдельного блока не требует.
    victoria — тёплая коралловая (цвет Victoria Metrics).
-   alerts — холодный бирюзовый (логи / ELK). */
+   alerts — холодный бирюзовый (логи / ELK).
+   zabbix — красный (цвет Zabbix), приглушённый до винного, чтобы не кричал. */
 :root[data-theme="dark"][data-space="victoria"] {
   --bg: #251f1b;            /* глубже, чем было: карточки заметнее отделяются */
   --bg-rail: #1e1916;
@@ -128,6 +129,41 @@
   --track: #c9d9d9;
   --shadow: 0 1px 2px rgba(30, 60, 60, 0.05), 0 8px 24px rgba(30, 60, 60, 0.08);
   --shadow-pop: 0 10px 32px rgba(30, 60, 60, 0.16);
+}
+
+:root[data-theme="dark"][data-space="zabbix"] {
+  --bg: #241c1f;
+  --bg-rail: #1d1619;
+  --panel: #31262a;
+  --panel-2: #2a2024;
+  --border: #4d3a40;
+  --border-soft: #3c2e33;
+  --text-dim: #d9cdd0;
+  --text-mute: #a08990;
+  --accent: #f0565e;
+  --accent-bright: #ff8a90;
+  --accent-soft: rgba(240, 86, 94, 0.16);
+  --chip: #31262a;
+  --track: #46353a;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.28), 0 8px 24px rgba(14, 6, 8, 0.22);
+  --shadow-pop: 0 10px 32px rgba(14, 6, 8, 0.42);
+}
+:root[data-theme="light"][data-space="zabbix"] {
+  --bg: #faf4f5;
+  --bg-rail: #f3e8ea;
+  --panel: #ffffff;
+  --panel-2: #f8eff1;
+  --border: #ead6da;
+  --border-soft: #f1e3e6;
+  --text-dim: #5a4a4e;
+  --text-mute: #9a8287;
+  --accent: #c4161c;
+  --accent-bright: #a81217;
+  --accent-soft: rgba(196, 22, 28, 0.10);
+  --chip: #f3e8ea;
+  --track: #e8d3d7;
+  --shadow: 0 1px 2px rgba(70, 30, 40, 0.05), 0 8px 24px rgba(70, 30, 40, 0.08);
+  --shadow-pop: 0 10px 32px rgba(70, 30, 40, 0.16);
 }
 
 /* Victoria — рабочая область заметно шире (как дашборд Prometheus): Query-графику,
@@ -260,3 +296,6 @@ textarea.input { resize: vertical; min-height: 64px; }
 .msg-ok { background: var(--accent-soft); color: var(--accent-bright); border: 1px solid var(--accent); }
 .msg-err { background: rgba(248,81,73,0.1); color: var(--danger); border: 1px solid rgba(248,81,73,0.4); }
 .endpoint { color: var(--text-mute); font-family: var(--mono); font-size: 12px; }
+
+/* Zabbix Audit — широкая таблица журнала с раскрываемыми изменениями. */
+html[data-space="zabbix"] .content { max-width: min(1600px, 96vw); }

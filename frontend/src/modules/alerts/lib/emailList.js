@@ -2,6 +2,8 @@ const GARBAGE = '[object Object]'
 
 export { GARBAGE }
 
+const DEFAULT_TG_URL = 'http://alarmbot.hoff.ru/sendService/api/telegram/sendTextFromService'
+
 function isGarbage(s) {
   return !s || s === GARBAGE
 }
@@ -72,11 +74,56 @@ export function parseDraftEmails(text) {
   return normalizeEmailList(String(text || ''))
 }
 
-/** Починить delivery.email.to внутри конфига на месте. */
+/** Группы Telegram: строки через Enter / запятую. */
+export function normalizeGroupList(raw) {
+  if (raw == null) return []
+  if (Array.isArray(raw)) {
+    return raw.map((x) => String(x || '').trim()).filter(Boolean)
+  }
+  return String(raw)
+    .split(/[\n,;]+/)
+    .map((x) => x.trim())
+    .filter(Boolean)
+}
+
+export function groupListToDraft(list) {
+  return normalizeGroupList(list).join('\n')
+}
+
+export function parseDraftGroups(text) {
+  return normalizeGroupList(String(text || ''))
+}
+
+/** Email включён? Старые конфиги без enabled → да. */
+export function emailEnabled(delivery) {
+  const email = (delivery && delivery.email) || {}
+  if (email.enabled === false) return false
+  return true
+}
+
+/** Telegram включён? */
+export function telegramEnabled(delivery) {
+  const tg = (delivery && delivery.telegram) || {}
+  return tg.enabled === true
+}
+
+/** Починить delivery.email / delivery.telegram внутри конфига на месте. */
 export function sanitizeDelivery(cfg) {
   if (!cfg || typeof cfg !== 'object') return cfg
   if (!cfg.delivery) cfg.delivery = {}
   if (!cfg.delivery.email) cfg.delivery.email = {}
-  cfg.delivery.email.to = normalizeEmailList(cfg.delivery.email.to)
+  const email = cfg.delivery.email
+  email.to = normalizeEmailList(email.to)
+  if (email.enabled === undefined) email.enabled = true
+  if (!email.from) email.from = 'noreply-n8nalerts@hoff.ru'
+
+  if (!cfg.delivery.telegram) cfg.delivery.telegram = {}
+  const tg = cfg.delivery.telegram
+  if (tg.enabled === undefined) tg.enabled = false
+  tg.groupList = normalizeGroupList(tg.groupList)
+  tg.authorization = String(tg.authorization || '').trim()
+  tg.url = String(tg.url || '').trim() || DEFAULT_TG_URL
   return cfg
 }
+
+export { DEFAULT_TG_URL }

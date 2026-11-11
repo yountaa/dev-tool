@@ -153,10 +153,16 @@ export function historySnapshot(cfg, extra = {}) {
     delivery: {
       from: email.from || '',
       to: Array.isArray(email.to) ? email.to : (email.to ? [email.to] : []),
+      emailEnabled: cfg.delivery?.email?.enabled !== false,
+      telegramEnabled: !!cfg.delivery?.telegram?.enabled,
+      telegramGroups: cfg.delivery?.telegram?.groupList || [],
     },
     schedule: {
       intervalMinutes: cfg.schedule?.intervalMinutes,
       trigger: cfg.schedule?.trigger || 'interval',
+      cron: cfg.schedule?.cron || '',
+      times: cfg.schedule?.times,
+      timezone: cfg.schedule?.timezone || '',
       sendWindow: sw?.enabled
         ? {
           enabled: true,
@@ -202,6 +208,20 @@ export const api = {
   remove: (alertKey, extra = {}) => call('delete', { alertKey, ...extra }),
 
   preview: async (config) => shapePreview(await call('preview', { config })),
+
+  /** Тест в Telegram через FastAPI → alarmbot (не трогает state алерта). */
+  testTelegram: async ({ text, authorization, groupList, url } = {}) => {
+    const data = await http.post(`${META}/test-telegram`, {
+      text: String(text || ''),
+      authorization: String(authorization || ''),
+      groupList: Array.isArray(groupList) ? groupList : [],
+      url: String(url || ''),
+    })
+    if (data && data.ok === false) {
+      throw new Error(data.message || data.error || 'не удалось отправить в Telegram')
+    }
+    return data
+  },
 
   fields: async (index) => {
     // Через FastAPI → Postgres TTL-кэш → n8n/ELK (не бьём ELK на каждый фокус).
