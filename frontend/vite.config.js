@@ -16,7 +16,6 @@ export default defineConfig(({ mode }) => {
         '/silences': 'http://localhost:8000',
         '/victoria': 'http://localhost:8000',
         '/alerts': 'http://localhost:8000',
-        '/zabbix': 'http://localhost:8000',
         '/access': 'http://localhost:8000',
         '/health': 'http://localhost:8000',
         '/share': 'http://localhost:8000',

@@ -24,7 +24,6 @@
 | `/silences/` | `backend_pool` | да |
 | `/victoria/` | `backend_pool` | да |
 | `/alerts/` | `backend_pool` | да |
-| `/zabbix/` | `backend_pool` | да |
 | `/access/` | `backend_pool` | да |
 | `/share`, `/s/` | `backend_pool` | нет |
 | `/health` | `backend_pool` | нет |
@@ -109,7 +108,7 @@ Access-лог в формате NDJSON (`authlog`) пишется в stdout и �
 часть считает его «local».
 
 Список путей, на которых личность обязательна: `/silences/`, `/victoria/`,
-`/alerts/`, `/zabbix/`, `/access/`.
+`/alerts/`, `/access/`.
 
 Готовая конфигурация внешнего nginx с `auth_request`, настройка oauth2-proxy и
 клиента Keycloak — [AUTH.md](AUTH.md).
@@ -122,7 +121,6 @@ Access-лог в формате NDJSON (`authlog`) пишется в stdout и �
 '/silences': 'http://localhost:8000',
 '/victoria': 'http://localhost:8000',
 '/alerts':   'http://localhost:8000',
-'/zabbix':   'http://localhost:8000',
 '/access':   'http://localhost:8000',
 '/health':   'http://localhost:8000',
 '/share':    'http://localhost:8000',

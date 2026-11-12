@@ -135,21 +135,6 @@ logging_setup.event(
 | `storage.pg_unavailable` / `storage.pg_skipped` | ERROR/INFO | БД недоступна или не настроена — модуль без истории/кэша |
 | `alerts.n8n_failed` | WARNING | lookup fields/indices в n8n не прошёл |
 
-### zabbix
-
-| Событие | Уровень | Смысл |
-| --- | --- | --- |
-| `zabbix.config` | INFO | старт: инстансы, число нод ES, тип авторизации, у кого есть Zabbix API |
-| `zabbix.tls_insecure` | WARNING | проверка TLS к ES и Zabbix API выключена — до прода смонтировать CA |
-| `zabbix.no_es_url` | WARNING | заданы `zbxaudit_*`, но нет `ZBX_AUDIT_ES_URL` |
-| `zabbix.api_incomplete` / `zabbix.orphan_api` | WARNING | опечатка в `zbxapi_`/`zbxapitoken_`: нет пары |
-| `es.node_failed` | WARNING | HA: часть нод ES недоступна, ответ взят со следующей |
-| `es.all_nodes_failed` | ERROR | недоступны все ноды ES |
-| `zabbix.no_indices` | WARNING | паттерн индекса не совпал ни с одним доступным индексом: опечатка или у ключа ES нет права read |
-| `zabbix.host_search_too_wide` | WARNING | текст совпал со слишком многими узлами сети — поиск только по тексту записи |
-| `zabbix.link_lookup_failed` | WARNING | не удалось найти в истории, какой узел/группу убрали из списка — показан ID связи |
-| `zabbix.api_failed` | WARNING | Zabbix API не ответил — аудит показан с ID вместо имён |
-
 ## Чужие логгеры
 
 Логи uvicorn заворачиваются в общий поток. Приглушены до `WARNING`:

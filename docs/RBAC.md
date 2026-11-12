@@ -55,7 +55,6 @@ RBAC_ADMIN_GROUP=observability-admins,platform-admins   # несколько —
 access_silences=team-oncall,team-sre                     # любая из групп
 access_victoria=team-metrics
 access_alerts=*                                          # открыт всем вошедшим
-access_zabbix=team-monitoring
 ```
 
 Значение `*` работает только в `access_<module>`. В `RBAC_ADMIN_GROUP`

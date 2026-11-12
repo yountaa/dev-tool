@@ -9,11 +9,9 @@
 import silences from './silences/index.js'
 import victoria from './victoria/index.js'
 import alerts from './alerts/index.js'
-import zabbix from './zabbix/index.js'
 
 export const modules = [
   silences,
   victoria,
   alerts,
-  zabbix,
 ]
